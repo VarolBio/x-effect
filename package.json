@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
+    "pack": "npm run build && rm -f x-effect-mvp.zip && cd dist && zip -r ../x-effect-mvp.zip .",
     "test": "vitest run"
   },
   "dependencies": {

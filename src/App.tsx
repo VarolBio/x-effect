@@ -36,7 +36,7 @@ import {
   type Profile,
   type Reason,
 } from "./domain/xeffect"
-import { loadProfile, saveProfile } from "./storage"
+import { loadProfile, parseProfile, saveProfile } from "./storage"
 
 type Screen = { t: "home" } | { t: "create" } | { t: "card"; id: string }
 
@@ -119,6 +119,7 @@ export default function App() {
             onOpen={(id) => setScreen({ t: "card", id })}
             onCreate={() => setScreen({ t: "create" })}
             onMark={onMark}
+            onImport={(next) => commit(next)}
           />
         )}
         {screen.t === "create" && (
@@ -312,6 +313,7 @@ function Home({
   onOpen,
   onCreate,
   onMark,
+  onImport,
 }: {
   profile: Profile
   today: string
@@ -319,6 +321,7 @@ function Home({
   onOpen: (id: string) => void
   onCreate: () => void
   onMark: (card: Card) => void
+  onImport: (next: Profile) => void
 }) {
   const active = profile.cards.filter((c) => !isCardComplete(c, today))
   const framed = profile.cards.filter((c) => isCardComplete(c, today))
@@ -350,6 +353,7 @@ function Home({
         >
           Start a card
         </button>
+        <BackupBar profile={profile} onImport={onImport} />
       </div>
     )
   }
@@ -464,7 +468,64 @@ function Home({
           </ul>
         </section>
       )}
+      <BackupBar profile={profile} onImport={onImport} />
     </div>
+  )
+}
+
+function BackupBar({
+  profile,
+  onImport,
+}: {
+  profile: Profile
+  onImport: (next: Profile) => void
+}) {
+  return (
+    <p className="mt-4 flex justify-center gap-5 text-sm text-mute">
+      <button
+        type="button"
+        className="underline-offset-2 hover:underline"
+        onClick={() => {
+          const blob = new Blob([JSON.stringify(profile)], {
+            type: "application/json",
+          })
+          const url = URL.createObjectURL(blob)
+          const a = document.createElement("a")
+          a.href = url
+          a.download = "x-effect-backup.json"
+          a.click()
+          URL.revokeObjectURL(url)
+        }}
+      >
+        Export cards
+      </button>
+      <label className="cursor-pointer underline-offset-2 hover:underline">
+        Import
+        <input
+          type="file"
+          accept="application/json"
+          className="sr-only"
+          onChange={(e) => {
+            const file = e.target.files?.[0]
+            e.target.value = ""
+            if (!file) return
+            void file.text().then((raw) => {
+              const next = parseProfile(raw)
+              if (!next) {
+                alert("That file isn't an X Effect backup.")
+                return
+              }
+              if (
+                !confirm("Replace the cards on this device with the backup?")
+              ) {
+                return
+              }
+              onImport(next)
+            })
+          }}
+        />
+      </label>
+    </p>
   )
 }
 
@@ -661,7 +722,7 @@ function CardScreen({
               })}
             </div>
             <p className="mt-3 text-xs text-mute">
-              Tap a day to add a note. Color is not an X.
+              Tap a day to add a note and colour it
             </p>
             {!complete && needsMark(card, today) && (
               <button

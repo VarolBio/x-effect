@@ -43,6 +43,9 @@ body {
   position: relative;
   isolation: isolate;
   min-height: 100svh;
+  min-height: 100dvh;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+    env(safe-area-inset-bottom) env(safe-area-inset-left);
   background:
     radial-gradient(ellipse 80% 55% at 50% -10%, rgba(232, 176, 90, 0.22), transparent 55%),
     radial-gradient(ellipse 70% 50% at 50% 40%, rgba(90, 60, 30, 0.35), transparent 70%),

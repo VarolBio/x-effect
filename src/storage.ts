@@ -18,6 +18,16 @@ export function saveProfile(profile: Profile): void {
   localStorage.setItem(KEY, JSON.stringify(profile))
 }
 
+export function parseProfile(raw: string): Profile | null {
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!isProfile(parsed)) return null
+    return derive(parsed, todayISO())
+  } catch {
+    return null
+  }
+}
+
 function isProfile(value: unknown): value is Profile {
   if (!value || typeof value !== "object") return false
   const v = value as Profile
