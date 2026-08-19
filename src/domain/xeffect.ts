@@ -4,10 +4,26 @@ export const XP_FINISHED = 75
 export const XP_MILESTONES: Record<number, number> = { 7: 25, 21: 50, 49: 100 }
 export const LEVEL_SIZE = 100
 
+export const RANKS: { name: string; hook: string }[] = [
+  { name: "Fresh ink", hook: "Mark today. That's the whole game." },
+  { name: "First chain", hook: "Don't break it. Don't quit if you do." },
+  { name: "Red marker", hook: "The card is starting to look like proof." },
+  { name: "Hole walker", hook: "A blank square isn't the end." },
+  { name: "Week-keeper", hook: "Seven in a row changes how you see yourself." },
+  { name: "Why-reader", hook: "Turn the card over when it gets hard." },
+  { name: "Forty-nine", hook: "One card from done." },
+  { name: "Framed", hook: "You finished a season. Start another." },
+  { name: "Deep ink", hook: "This isn't a streak anymore. It's you." },
+  { name: "Chain legend", hook: "People quit. You didn't." },
+  { name: "Quiet proof", hook: "No audience. Just the card." },
+  { name: "Lifeblood", hook: "Willpower is a muscle. Yours is loud." },
+]
+
 export type DayCell = {
   date: string
   mark: "x" | "empty"
   reasonId?: string
+  note?: string
 }
 
 export type Card = {
@@ -50,6 +66,17 @@ export const DEFAULT_REASONS: Reason[] = [
   { id: "lazy", label: "Lazy", color: "#3b82f6" },
   { id: "sick", label: "Sick", color: "#ef4444" },
   { id: "busy", label: "Busy", color: "#f59e0b" },
+]
+
+export const PRESET_COLORS = [
+  "#ef4444",
+  "#f59e0b",
+  "#3b82f6",
+  "#22c55e",
+  "#8b5cf6",
+  "#ec4899",
+  "#14b8a6",
+  "#64748b",
 ]
 
 export function toISODate(d: Date): string {
@@ -208,33 +235,42 @@ function replaceCell(card: Card, date: string, next: DayCell): Card {
   return { ...card, cells }
 }
 
+function withMark(card: Card, date: string, mark: "x" | "empty"): Card {
+  const cell = cellFor(card, date)
+  if (!cell) throw new Error("Date is not on this card")
+  if (cell.mark === mark) return card
+  return replaceCell(card, date, keepNote({ ...cell, mark }))
+}
+
+function keepNote(cell: DayCell): DayCell {
+  const next: DayCell = { date: cell.date, mark: cell.mark }
+  if (cell.reasonId) next.reasonId = cell.reasonId
+  if (cell.note) next.note = cell.note
+  return next
+}
+
 export function markToday(card: Card, today: string): Card {
   if (isCardComplete(card, today)) throw new Error("This card is finished")
-  const cell = cellFor(card, today)
-  if (!cell) throw new Error("Today is not on this card")
-  if (cell.mark === "x") return card
-  return replaceCell(card, today, { date: today, mark: "x" })
+  return withMark(card, today, "x")
 }
 
 export function unmarkToday(card: Card, today: string): Card {
-  const cell = cellFor(card, today)
-  if (!cell) throw new Error("Today is not on this card")
-  if (cell.mark !== "x") return card
-  return replaceCell(card, today, { date: today, mark: "empty" })
+  return withMark(card, today, "empty")
 }
 
-export function colorHole(
+export function annotateDay(
   card: Card,
   date: string,
   today: string,
-  reasonId: string | undefined,
+  annotation: { reasonId?: string; note?: string },
 ): Card {
-  if (date >= today) throw new Error("Only past holes can be colored")
+  if (date > today) throw new Error("Can't note a future day")
   const cell = cellFor(card, date)
   if (!cell) throw new Error("Date is not on this card")
-  if (cell.mark === "x") throw new Error("An X is not a hole")
-  const next: DayCell = { date, mark: "empty" }
-  if (reasonId) next.reasonId = reasonId
+  const next: DayCell = { date, mark: cell.mark }
+  if (annotation.reasonId) next.reasonId = annotation.reasonId
+  const note = annotation.note?.trim()
+  if (note) next.note = note
   return replaceCell(card, date, next)
 }
 
@@ -261,6 +297,18 @@ export function levelFromXp(xp: number): {
     into: xp % LEVEL_SIZE,
     need: LEVEL_SIZE,
   }
+}
+
+export function rankFor(level: number): {
+  level: number
+  name: string
+  hook: string
+} {
+  const safe = Math.max(1, level)
+  const i = Math.min(safe, RANKS.length) - 1
+  const base = RANKS[i]!
+  if (safe <= RANKS.length) return { level: safe, name: base.name, hook: base.hook }
+  return { level: safe, name: `${base.name} ${safe}`, hook: base.hook }
 }
 
 export function computeBadges(profile: Profile, today: string): string[] {
@@ -294,9 +342,22 @@ export function celebrationsForMark(opts: {
   nextXs: number
   streak: number
   newBadgeIds: string[]
+  prevXp?: number
+  nextXp?: number
 }): Celebration[] {
   const out: Celebration[] = []
-  const { card, prevXs, nextXs, streak, newBadgeIds } = opts
+  const { card, prevXs, nextXs, streak, newBadgeIds, prevXp, nextXp } = opts
+  if (prevXp !== undefined && nextXp !== undefined) {
+    const from = levelFromXp(prevXp).level
+    const to = levelFromXp(nextXp).level
+    if (to > from) {
+      const rank = rankFor(to)
+      out.push({
+        title: `Level ${to} · ${rank.name}`,
+        body: rank.hook,
+      })
+    }
+  }
   if (prevXs < 7 && nextXs >= 7) {
     out.push({
       title: "7 X's",

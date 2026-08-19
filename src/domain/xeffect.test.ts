@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
   addDays,
   celebrationsForMark,
-  colorHole,
+  annotateDay,
   computeBadges,
   computeXp,
   consecutiveStreak,
@@ -10,7 +10,9 @@ import {
   derive,
   isCardComplete,
   isPerfect,
+  levelFromXp,
   markToday,
+  rankFor,
   totalXs,
   unmarkToday,
   type Card,
@@ -81,7 +83,7 @@ describe("X Effect cards", () => {
     expect(unmarkToday(marked, TODAY).cells[0]?.mark).toBe("empty")
   })
 
-  it("treats a colored miss as a hole, not an X", () => {
+  it("notes and colors any day without turning it into an X", () => {
     const start = addDays(TODAY, -2)
     let card = createCard({
       id: "a",
@@ -90,14 +92,45 @@ describe("X Effect cards", () => {
       startDate: start,
     })
     card = markToday(card, start)
-    card = colorHole(card, addDays(start, 1), TODAY, "lazy")
-    const hole = card.cells[1]
-    expect(hole?.mark).toBe("empty")
-    expect(hole?.reasonId).toBe("lazy")
+    card = annotateDay(card, start, TODAY, {
+      reasonId: "sick",
+      note: "flu",
+    })
+    const marked = card.cells[0]
+    expect(marked?.mark).toBe("x")
+    expect(marked?.reasonId).toBe("sick")
+    expect(marked?.note).toBe("flu")
     expect(totalXs(card)).toBe(1)
+
+    card = annotateDay(card, addDays(start, 1), TODAY, { reasonId: "lazy" })
+    expect(card.cells[1]?.mark).toBe("empty")
+    expect(card.cells[1]?.reasonId).toBe("lazy")
     expect(consecutiveStreak(card, TODAY)).toBe(0)
-    expect(() => colorHole(card, start, TODAY, "lazy")).toThrow()
-    expect(() => colorHole(card, TODAY, TODAY, "lazy")).toThrow()
+
+    card = annotateDay(card, TODAY, TODAY, { note: "tried anyway" })
+    expect(card.cells[2]?.mark).toBe("empty")
+    expect(card.cells[2]?.note).toBe("tried anyway")
+    expect(() =>
+      annotateDay(card, addDays(TODAY, 1), TODAY, { reasonId: "busy" }),
+    ).toThrow()
+  })
+
+  it("keeps a day's note when today's X is undone", () => {
+    let card = createCard({
+      id: "a",
+      name: "Walk",
+      why: "y",
+      startDate: TODAY,
+    })
+    card = markToday(card, TODAY)
+    card = annotateDay(card, TODAY, TODAY, {
+      reasonId: "sick",
+      note: "sore throat",
+    })
+    card = unmarkToday(card, TODAY)
+    expect(card.cells[0]?.mark).toBe("empty")
+    expect(card.cells[0]?.reasonId).toBe("sick")
+    expect(card.cells[0]?.note).toBe("sore throat")
   })
 
   it("counts streak back through X's and breaks on a hole", () => {
@@ -157,6 +190,27 @@ describe("X Effect cards", () => {
     })
     expect(notes.some((n) => n.title === "7 X's")).toBe(true)
     expect(notes.some((n) => n.body.includes("A long bath"))).toBe(true)
+  })
+
+  it("ranks every 100 XP and names the next one", () => {
+    expect(levelFromXp(0)).toEqual({ level: 1, into: 0, need: 100 })
+    expect(levelFromXp(99).level).toBe(1)
+    expect(levelFromXp(100).level).toBe(2)
+    expect(rankFor(1).name).toBe("Fresh ink")
+    expect(rankFor(8).name).toBe("Framed")
+    expect(rankFor(13).name).toContain("Lifeblood")
+    const card = cardWithMarks(["x"])
+    const notes = celebrationsForMark({
+      card,
+      prevXs: 9,
+      nextXs: 10,
+      streak: 10,
+      newBadgeIds: [],
+      prevXp: 95,
+      nextXp: 105,
+    })
+    expect(notes[0]?.title).toContain("Level 2")
+    expect(notes[0]?.body).toBe(rankFor(2).hook)
   })
 
   it("derive keeps xp and badges in sync", () => {

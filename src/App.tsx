@@ -7,9 +7,14 @@ import {
 } from "react"
 import {
   BADGES,
+  LEVEL_SIZE,
+  PRESET_COLORS,
+  RANKS,
+  XP_FINISHED,
+  XP_PER_X,
+  annotateDay,
   cellKind,
   celebrationsForMark,
-  colorHole,
   consecutiveStreak,
   createCard,
   derive,
@@ -20,12 +25,14 @@ import {
   missedYesterday,
   needsMark,
   newId,
+  rankFor,
   replaceCard,
   todayISO,
   totalXs,
   unmarkToday,
   type Card,
   type Celebration,
+  type DayCell,
   type Profile,
   type Reason,
 } from "./domain/xeffect"
@@ -39,9 +46,11 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>({ t: "home" })
   const [notes, setNotes] = useState<Celebration[]>([])
   const [burst, setBurst] = useState(0)
-  const [hole, setHole] = useState<{ cardId: string; date: string } | null>(
-    null,
-  )
+  const [ranksOpen, setRanksOpen] = useState(false)
+  const [noteDay, setNoteDay] = useState<{
+    cardId: string
+    date: string
+  } | null>(null)
 
   useEffect(() => {
     saveProfile(profile)
@@ -58,6 +67,7 @@ export default function App() {
 
   function onMark(target: Card) {
     const prevXs = totalXs(target)
+    const oldXp = profile.xp
     const oldBadges = new Set(profile.badges)
     const marked = markToday(target, today)
     const next = derive(replaceCard(profile, marked), today)
@@ -70,12 +80,10 @@ export default function App() {
         nextXs: totalXs(marked),
         streak: consecutiveStreak(marked, today),
         newBadgeIds: next.badges.filter((id) => !oldBadges.has(id)),
+        prevXp: oldXp,
+        nextXp: next.xp,
       }),
     )
-  }
-
-  function onUnmark(target: Card) {
-    commit(replaceCard(profile, unmarkToday(target, today)))
   }
 
   function onCreate(input: { name: string; why: string; reward: string }) {
@@ -89,8 +97,8 @@ export default function App() {
     setScreen({ t: "card", id: made.id })
   }
 
-  const holeCard = hole
-    ? profile.cards.find((c) => c.id === hole.cardId)
+  const noteCard = noteDay
+    ? profile.cards.find((c) => c.id === noteDay.cardId)
     : undefined
 
   return (
@@ -98,7 +106,11 @@ export default function App() {
       <div className="grain" aria-hidden="true" />
       <Dust />
       <div className="relative z-[1] mx-auto min-h-svh max-w-lg px-4 py-8">
-        <Header profile={profile} onHome={() => setScreen({ t: "home" })} />
+        <Header
+          profile={profile}
+          onHome={() => setScreen({ t: "home" })}
+          onRanks={() => setRanksOpen(true)}
+        />
         {screen.t === "home" && (
           <Home
             profile={profile}
@@ -123,8 +135,7 @@ export default function App() {
             burst={burst}
             onBack={() => setScreen({ t: "home" })}
             onMark={() => onMark(card)}
-            onUnmark={() => onUnmark(card)}
-            onHole={(date) => setHole({ cardId: card.id, date })}
+            onNote={(date) => setNoteDay({ cardId: card.id, date })}
             onDelete={() => {
               if (!confirm(`Delete “${card.name}”?`)) return
               commit({
@@ -139,6 +150,12 @@ export default function App() {
           <p className="mt-8 text-mute">That card is gone.</p>
         )}
       </div>
+      {ranksOpen && (
+        <RanksSheet
+          xp={profile.xp}
+          onClose={() => setRanksOpen(false)}
+        />
+      )}
       {notes[0] && (
         <Modal onClose={() => setNotes((n) => n.slice(1))}>
           <Confetti />
@@ -155,21 +172,27 @@ export default function App() {
           </button>
         </Modal>
       )}
-      {hole && holeCard && (
-        <ReasonPicker
+      {noteDay && noteCard && (
+        <DayNoteSheet
           reasons={profile.reasons}
-          currentId={
-            holeCard.cells.find((c) => c.date === hole.date)?.reasonId
+          cell={noteCard.cells.find((c) => c.date === noteDay.date)}
+          canUndoToday={
+            noteDay.date === today &&
+            noteCard.cells.find((c) => c.date === noteDay.date)?.mark === "x"
           }
-          onClose={() => setHole(null)}
-          onPick={(reasonId) => {
+          onClose={() => setNoteDay(null)}
+          onSave={(annotation) => {
             commit(
               replaceCard(
                 profile,
-                colorHole(holeCard, hole.date, today, reasonId),
+                annotateDay(noteCard, noteDay.date, today, annotation),
               ),
             )
-            setHole(null)
+            setNoteDay(null)
+          }}
+          onUndoToday={() => {
+            commit(replaceCard(profile, unmarkToday(noteCard, today)))
+            setNoteDay(null)
           }}
           onAdd={(reason) => {
             commit({ ...profile, reasons: [...profile.reasons, reason] })
@@ -214,11 +237,14 @@ function Dust() {
 function Header({
   profile,
   onHome,
+  onRanks,
 }: {
   profile: Profile
   onHome: () => void
+  onRanks: () => void
 }) {
   const { level, into, need } = levelFromXp(profile.xp)
+  const rank = rankFor(level)
   return (
     <header className="mb-8">
       <div className="flex items-center justify-between gap-3">
@@ -232,16 +258,28 @@ function Header({
             X Effect
           </span>
         </button>
-        <p className="text-sm text-mute">
-          Lv {level} · {profile.xp} XP
-        </p>
+        <button type="button" onClick={onRanks} className="text-right">
+          <span className="block why-hand text-lg leading-tight text-cream">
+            {rank.name}
+          </span>
+          <span className="text-xs text-mute">
+            {into}/{need} XP
+          </span>
+        </button>
       </div>
-      <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-black/30">
-        <div
-          className="xp-fill h-full"
-          style={{ width: `${(into / need) * 100}%` }}
-        />
-      </div>
+      <button
+        type="button"
+        onClick={onRanks}
+        className="mt-3 block w-full"
+        aria-label={`${need - into} XP to the next rank`}
+      >
+        <div className="h-1.5 overflow-hidden rounded-full bg-black/30">
+          <div
+            className="xp-fill h-full"
+            style={{ width: `${(into / need) * 100}%` }}
+          />
+        </div>
+      </button>
       {profile.badges.length > 0 && (
         <ul className="mt-3 flex flex-wrap gap-1.5">
           {profile.badges.map((id) => (
@@ -301,6 +339,10 @@ function Home({
         <p className="mt-2 text-center text-mute">
           Write why you&apos;re doing this — you&apos;ll need it.
         </p>
+        <p className="mt-4 text-center text-sm text-mute">
+          Each X is {XP_PER_X} XP. Every {LEVEL_SIZE} XP you rank up — a new
+          name on the desk. Tap your rank anytime to see the ladder.
+        </p>
         <button
           type="button"
           onClick={onCreate}
@@ -332,7 +374,11 @@ function Home({
                     X&apos;s
                   </p>
                 </div>
-                <MiniGrid card={card} today={today} />
+                <MiniGrid
+                  card={card}
+                  today={today}
+                  reasons={profile.reasons}
+                />
               </div>
               <div className="relative mt-4">
                 {burst > 0 && <InkBurst key={burst} />}
@@ -375,7 +421,11 @@ function Home({
               >
                 <span className="why-hand text-lg">{card.name}</span>
                 <span className="flex items-center gap-3">
-                  <MiniGrid card={card} today={today} />
+                  <MiniGrid
+                    card={card}
+                    today={today}
+                    reasons={profile.reasons}
+                  />
                   <span className="text-sm text-mute">{totalXs(card)}/49</span>
                 </span>
               </button>
@@ -496,8 +546,7 @@ function CardScreen({
   burst,
   onBack,
   onMark,
-  onUnmark,
-  onHole,
+  onNote,
   onDelete,
 }: {
   card: Card
@@ -506,8 +555,7 @@ function CardScreen({
   burst: number
   onBack: () => void
   onMark: () => void
-  onUnmark: () => void
-  onHole: (date: string) => void
+  onNote: (date: string) => void
   onDelete: () => void
 }) {
   const [back, setBack] = useState(false)
@@ -531,132 +579,111 @@ function CardScreen({
       >
         ← Cards
       </button>
-      <div className="flip-scene mt-4">
-        <div className={`flip-card ${back ? "is-flipped" : ""}`}>
-          <div className="flip-face">
-            <div className="index-card index-card-lined relative h-full p-5 pt-8 pl-12">
-              <span className="tape" aria-hidden="true" />
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <h1 className="why-hand text-2xl leading-tight">{card.name}</h1>
-                  <p className="mt-1 text-sm text-mute">
-                    {streak} streak · {xs} X&apos;s
-                    {complete
-                      ? isPerfect(card)
-                        ? " · Perfect"
-                        : " · Done"
-                      : ""}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setBack(true)}
-                  className="shrink-0 rounded-md border border-ink/15 bg-white/50 px-3 py-1.5 text-sm"
-                >
-                  Why
-                </button>
-              </div>
-              <div className="relative mt-5 grid grid-cols-7 gap-1.5">
-                {burst > 0 && <InkBurst key={burst} />}
-                {card.cells.map((cell) => {
-                  const kind = cellKind(cell, today)
-                  const reason = cell.reasonId
-                    ? reasonsById.get(cell.reasonId)
-                    : undefined
-                  const label =
-                    kind === "x"
-                      ? `${cell.date} marked`
-                      : kind === "hole"
-                        ? `${cell.date} hole${reason ? `: ${reason.label}` : ""}`
-                        : kind === "today"
-                          ? `${cell.date} today`
-                          : `${cell.date} upcoming`
-                  return (
-                    <button
-                      key={cell.date}
-                      type="button"
-                      title={label}
-                      aria-label={label}
-                      disabled={
-                        kind === "future" ||
-                        (kind === "x" && cell.date !== today)
-                      }
-                      onClick={() => {
-                        if (kind === "today") {
-                          if (cell.mark === "x") onUnmark()
-                          else onMark()
-                          return
-                        }
-                        if (kind === "hole") onHole(cell.date)
-                      }}
-                      className={[
-                        "flex aspect-square items-center justify-center rounded-[2px] border bg-white/35 disabled:opacity-100",
-                        kind === "future"
-                          ? "cursor-default border-ink/10 opacity-40"
-                          : "border-ink/20",
-                        kind === "today" || kind === "hole"
-                          ? "cursor-pointer"
-                          : "",
-                        kind === "today" ? "cell-today" : "",
-                      ].join(" ")}
-                      style={
-                        kind === "hole" && reason
-                          ? { backgroundColor: reason.color }
-                          : undefined
-                      }
-                    >
-                      {kind === "x" && (
-                        <XInk animate={cell.date === today} />
-                      )}
-                    </button>
-                  )
-                })}
-              </div>
-              <p className="mt-3 text-xs text-mute">
-                Tap a hole to name why it happened. Color is not an X.
-              </p>
-              {!complete && needsMark(card, today) && (
-                <button
-                  type="button"
-                  onClick={onMark}
-                  className="btn-mark mt-5 w-full rounded-md px-4 py-3 text-white"
-                >
-                  Mark today&apos;s X
-                </button>
-              )}
-              {!complete && todayMarked && (
-                <p className="mt-5 text-center text-sm text-mute">
-                  Today&apos;s X is in. Tap it to undo until midnight.
-                </p>
-              )}
-              {card.reward && xs < 7 && (
-                <p className="mt-4 text-sm text-mute">
-                  After 7 X&apos;s: {card.reward}
-                </p>
-              )}
-            </div>
+      <div className="card-sheet index-card index-card-lined relative mt-4 p-5 pt-8 pl-12">
+        <span className="tape" aria-hidden="true" />
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h1 className="why-hand text-2xl leading-tight">{card.name}</h1>
+            <p className="mt-1 text-sm text-mute">
+              {streak} streak · {xs} X&apos;s
+              {complete ? (isPerfect(card) ? " · Perfect" : " · Done") : ""}
+            </p>
           </div>
-          <div className="flip-face flip-face-back">
-            <div className="index-card relative h-full p-6 pt-8">
-              <span className="tape" aria-hidden="true" />
-              <div className="flex items-start justify-between gap-3">
-                <p className="text-xs uppercase tracking-[0.18em] text-mute">
-                  Back of the card
-                </p>
-                <button
-                  type="button"
-                  onClick={() => setBack(false)}
-                  className="rounded-md border border-ink/15 bg-white/50 px-3 py-1.5 text-sm"
-                >
-                  Grid
-                </button>
-              </div>
-              <p className="why-hand mt-10 text-2xl leading-relaxed">
-                {card.why}
-              </p>
-            </div>
-          </div>
+          <button
+            type="button"
+            onClick={() => setBack((v) => !v)}
+            className="shrink-0 rounded-md border border-ink/15 bg-white/50 px-3 py-1.5 text-sm"
+          >
+            {back ? "Grid" : "Why"}
+          </button>
         </div>
+        {back ? (
+          <p className="why-hand mt-10 text-2xl leading-relaxed">{card.why}</p>
+        ) : (
+          <>
+            <div className="habit-grid relative mt-5 grid grid-cols-7 gap-1.5">
+              {burst > 0 && <InkBurst key={burst} />}
+              {card.cells.map((cell) => {
+                const kind = cellKind(cell, today)
+                const reason = cell.reasonId
+                  ? reasonsById.get(cell.reasonId)
+                  : undefined
+                const extra = [reason?.label, cell.note]
+                  .filter(Boolean)
+                  .join(" · ")
+                const label =
+                  kind === "x"
+                    ? `${cell.date} marked${extra ? `: ${extra}` : ""}`
+                    : kind === "hole"
+                      ? `${cell.date} hole${extra ? `: ${extra}` : ""}`
+                      : kind === "today"
+                        ? `${cell.date} today${extra ? `: ${extra}` : ""}`
+                        : `${cell.date} upcoming`
+                return (
+                  <button
+                    key={cell.date}
+                    type="button"
+                    title={label}
+                    aria-label={label}
+                    disabled={kind === "future"}
+                    onClick={() => {
+                      if (kind === "today" && cell.mark !== "x") {
+                        onMark()
+                        return
+                      }
+                      onNote(cell.date)
+                    }}
+                    className={[
+                      "relative flex aspect-square items-center justify-center rounded-[2px] border bg-white/70 disabled:opacity-100",
+                      kind === "future"
+                        ? "cursor-default border-ink/10 opacity-40"
+                        : "cursor-pointer border-ink/20",
+                      kind === "today" ? "cell-today" : "",
+                    ].join(" ")}
+                    style={
+                      reason ? { backgroundColor: reason.color } : undefined
+                    }
+                  >
+                    {kind === "x" && (
+                      <XInk
+                        animate={cell.date === today}
+                        color={reason ? contrastInk(reason.color) : undefined}
+                      />
+                    )}
+                    {cell.note && (
+                      <span
+                        className="absolute bottom-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-ink/55"
+                        aria-hidden="true"
+                      />
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+            <p className="mt-3 text-xs text-mute">
+              Tap a day to add a note. Color is not an X.
+            </p>
+            {!complete && needsMark(card, today) && (
+              <button
+                type="button"
+                onClick={onMark}
+                className="btn-mark mt-5 w-full rounded-md px-4 py-3 text-white"
+              >
+                Mark today&apos;s X
+              </button>
+            )}
+            {!complete && todayMarked && (
+              <p className="mt-5 text-center text-sm text-mute">
+                Today&apos;s X is in. Tap it to add a note.
+              </p>
+            )}
+            {card.reward && xs < 7 && (
+              <p className="mt-4 text-sm text-mute">
+                After 7 X&apos;s: {card.reward}
+              </p>
+            )}
+          </>
+        )}
       </div>
       <button
         type="button"
@@ -669,7 +696,15 @@ function CardScreen({
   )
 }
 
-function MiniGrid({ card, today }: { card: Card; today: string }) {
+function MiniGrid({
+  card,
+  today,
+  reasons,
+}: {
+  card: Card
+  today: string
+  reasons: Reason[]
+}) {
   return (
     <span
       className="grid shrink-0 grid-cols-7 gap-px"
@@ -677,19 +712,25 @@ function MiniGrid({ card, today }: { card: Card; today: string }) {
     >
       {card.cells.map((cell) => {
         const kind = cellKind(cell, today)
+        const reason = cell.reasonId
+          ? reasons.find((r) => r.id === cell.reasonId)
+          : undefined
         return (
           <span
             key={cell.date}
             className={[
               "h-1.5 w-1.5 rounded-[1px]",
-              kind === "x"
-                ? "bg-x"
-                : kind === "today"
-                  ? "bg-today"
-                  : kind === "hole"
-                    ? "bg-ink/25"
-                    : "bg-ink/10",
+              reason
+                ? ""
+                : kind === "x"
+                  ? "bg-x"
+                  : kind === "today"
+                    ? "bg-today"
+                    : kind === "hole"
+                      ? "bg-ink/25"
+                      : "bg-ink/10",
             ].join(" ")}
+            style={reason ? { backgroundColor: reason.color } : undefined}
           />
         )
       })}
@@ -713,11 +754,18 @@ function HeroCard() {
   )
 }
 
-function XInk({ animate = true }: { animate?: boolean }) {
+function XInk({
+  animate = true,
+  color,
+}: {
+  animate?: boolean
+  color?: string
+}) {
   return (
     <svg
       viewBox="0 0 24 24"
-      className={`h-[72%] w-[72%] text-x ${animate ? "x-draw" : ""}`}
+      className={`h-[72%] w-[72%] ${color ? "" : "text-x"} ${animate ? "x-draw" : ""}`}
+      style={color ? { color } : undefined}
       aria-hidden="true"
     >
       <path className="x-stroke" d="M5.2 5.4 L18.6 19.1" />
@@ -770,6 +818,51 @@ function Confetti() {
   )
 }
 
+function RanksSheet({ xp, onClose }: { xp: number; onClose: () => void }) {
+  const { level, into, need } = levelFromXp(xp)
+  const current = rankFor(level)
+  return (
+    <Modal onClose={onClose}>
+      <p className="why-hand text-3xl">Ranks</p>
+      <p className="mt-2 text-sm text-mute">
+        Each X is {XP_PER_X} XP. Bonuses at 7, 21, and 49 X&apos;s on a card,
+        plus {XP_FINISHED} when a card is framed. Every {LEVEL_SIZE} XP you
+        take a new name. Higher ranks don&apos;t unlock a freeze — they prove
+        you kept going.
+      </p>
+      <p className="mt-3 text-sm">
+        You: {current.name} · {into}/{need} XP to the next.
+      </p>
+      <ol className="mt-4 max-h-64 space-y-1 overflow-y-auto pr-1">
+        {RANKS.map((r, i) => {
+          const n = i + 1
+          const here = n === Math.min(level, RANKS.length)
+          return (
+            <li
+              key={r.name}
+              className={
+                here ? "rounded-md bg-today/20 px-2 py-1.5" : "px-2 py-1"
+              }
+            >
+              <p className="why-hand text-lg leading-tight">
+                {n}. {r.name}
+              </p>
+              <p className="text-xs text-mute">{r.hook}</p>
+            </li>
+          )
+        })}
+      </ol>
+      <button
+        type="button"
+        className="btn-mark mt-5 w-full rounded-md px-4 py-2 text-white"
+        onClick={onClose}
+      >
+        Back to the card
+      </button>
+    </Modal>
+  )
+}
+
 function Modal({
   children,
   onClose,
@@ -783,7 +876,7 @@ function Modal({
       onClick={onClose}
     >
       <div
-        className="index-card relative w-full max-w-sm overflow-hidden p-7"
+        className="index-card relative w-full max-w-sm overflow-y-auto p-7 max-h-[85svh]"
         onClick={(e) => e.stopPropagation()}
       >
         {children}
@@ -792,39 +885,57 @@ function Modal({
   )
 }
 
-function ReasonPicker({
+function DayNoteSheet({
   reasons,
-  currentId,
+  cell,
+  canUndoToday,
   onClose,
-  onPick,
+  onSave,
+  onUndoToday,
   onAdd,
   onRemove,
 }: {
   reasons: Reason[]
-  currentId?: string
+  cell?: DayCell
+  canUndoToday: boolean
   onClose: () => void
-  onPick: (reasonId: string | undefined) => void
+  onSave: (annotation: { reasonId?: string; note?: string }) => void
+  onUndoToday: () => void
   onAdd: (reason: Reason) => void
   onRemove: (id: string) => void
 }) {
+  const [note, setNote] = useState(cell?.note ?? "")
+  const [reasonId, setReasonId] = useState(cell?.reasonId)
   const [label, setLabel] = useState("")
-  const [color, setColor] = useState("#6366f1")
+  const [color, setColor] = useState(PRESET_COLORS[0]!)
 
   return (
     <Modal onClose={onClose}>
-      <p className="why-hand text-3xl">Why the hole?</p>
+      <p className="why-hand text-3xl">Note this day</p>
       <p className="mt-1 text-sm text-mute">
-        This stays a miss. The color is just a note.
+        Color is a reminder. An X stays an X.
       </p>
-      <ul className="mt-4 space-y-1">
+      <textarea
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        rows={3}
+        placeholder="What happened?"
+        className="mt-4 w-full rounded-md border border-ink/15 bg-white/70 px-3 py-2 text-ink outline-none focus:ring-2 focus:ring-today/60"
+      />
+      <p className="mt-4 text-xs font-medium uppercase tracking-[0.18em] text-mute">
+        Color
+      </p>
+      <ul className="mt-2 space-y-1">
         {reasons.map((r) => (
           <li key={r.id} className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => onPick(r.id)}
+              onClick={() =>
+                setReasonId((id) => (id === r.id ? undefined : r.id))
+              }
               className={[
                 "flex flex-1 items-center gap-2 rounded-md px-3 py-2 text-left",
-                currentId === r.id ? "ring-2 ring-ink" : "bg-desk/10",
+                reasonId === r.id ? "ring-2 ring-ink" : "bg-desk/10",
               ].join(" ")}
             >
               <span
@@ -836,7 +947,10 @@ function ReasonPicker({
             <button
               type="button"
               className="text-xs text-mute"
-              onClick={() => onRemove(r.id)}
+              onClick={() => {
+                if (reasonId === r.id) setReasonId(undefined)
+                onRemove(r.id)
+              }}
             >
               Remove
             </button>
@@ -844,50 +958,81 @@ function ReasonPicker({
         ))}
       </ul>
       <form
-        className="mt-4 flex gap-2"
+        className="mt-4"
         onSubmit={(e) => {
           e.preventDefault()
           if (!label.trim()) return
-          onAdd({ id: newId(), label: label.trim(), color })
+          const id = newId()
+          onAdd({ id, label: label.trim(), color })
+          setReasonId(id)
           setLabel("")
         }}
       >
         <input
           value={label}
           onChange={(e) => setLabel(e.target.value)}
-          placeholder="New reason"
-          className="min-w-0 flex-1 rounded-md border border-ink/15 px-2 py-1"
+          placeholder="Name a color, e.g. Sick"
+          className="w-full rounded-md border border-ink/15 px-2 py-1"
         />
-        <input
-          type="color"
-          value={color}
-          onChange={(e) => setColor(e.target.value)}
-          aria-label="Color"
-          className="h-9 w-9 cursor-pointer bg-transparent"
-        />
+        <div className="mt-2 flex flex-wrap gap-2">
+          {PRESET_COLORS.map((c) => (
+            <button
+              key={c}
+              type="button"
+              aria-label={`Pick ${c}`}
+              aria-pressed={color === c}
+              onClick={() => setColor(c)}
+              className={[
+                "h-7 w-7 rounded-full",
+                color === c ? "ring-2 ring-ink ring-offset-2" : "",
+              ].join(" ")}
+              style={{ backgroundColor: c }}
+            />
+          ))}
+        </div>
         <button
           type="submit"
-          className="rounded-md bg-ink px-3 py-1 text-paper"
+          className="mt-2 rounded-md bg-ink px-3 py-1 text-sm text-paper"
         >
           Add
         </button>
       </form>
-      <div className="mt-4 flex gap-2">
-        <button
-          type="button"
-          className="flex-1 rounded-md border border-ink/20 px-3 py-2 text-sm"
-          onClick={() => onPick(undefined)}
-        >
-          Clear color
-        </button>
-        <button
-          type="button"
-          className="flex-1 rounded-md bg-ink px-3 py-2 text-sm text-paper"
-          onClick={onClose}
-        >
-          Close
-        </button>
+      <div className="mt-4 flex flex-col gap-2">
+        {canUndoToday && (
+          <button
+            type="button"
+            className="w-full rounded-md border border-ink/20 px-3 py-2 text-sm"
+            onClick={onUndoToday}
+          >
+            Undo today&apos;s X
+          </button>
+        )}
+        <div className="flex gap-2">
+          <button
+            type="button"
+            className="flex-1 rounded-md border border-ink/20 px-3 py-2 text-sm"
+            onClick={onClose}
+          >
+            Close
+          </button>
+          <button
+            type="button"
+            className="btn-mark flex-1 rounded-md px-3 py-2 text-sm text-white"
+            onClick={() => onSave({ reasonId, note })}
+          >
+            Save
+          </button>
+        </div>
       </div>
     </Modal>
   )
+}
+
+function contrastInk(hex: string): string {
+  const h = hex.replace("#", "")
+  if (h.length !== 6) return "#1c1612"
+  const r = parseInt(h.slice(0, 2), 16)
+  const g = parseInt(h.slice(2, 4), 16)
+  const b = parseInt(h.slice(4, 6), 16)
+  return r * 0.299 + g * 0.587 + b * 0.114 > 160 ? "#1c1612" : "#f6efe2"
 }
