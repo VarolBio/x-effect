@@ -260,6 +260,9 @@ export function Pinboard({
                 top: `${layout.y}%`,
                 zIndex: drag?.id === card.id ? 999 : layout.z,
                 transform: `rotate(${layout.rot}deg)`,
+                backgroundColor:
+                  PAPER_COLORS.find((p) => p.id === paper)?.hex ??
+                  PAPER_COLORS[0].hex,
               }}
             >
               <button
