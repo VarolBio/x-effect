@@ -168,6 +168,9 @@ body {
   border: 0;
   padding: 0;
   appearance: none;
+  width: 96px;
+  height: 28px;
+  top: -14px;
 }
 
 .tape-handle:active {
@@ -194,7 +197,7 @@ body {
   left: 0;
   right: 0;
   bottom: 0;
-  z-index: 30;
+  z-index: 80;
   padding: 0.55rem 1rem calc(0.7rem + env(safe-area-inset-bottom));
   background: linear-gradient(180deg, transparent, rgba(18, 12, 8, 0.88) 28%);
 }

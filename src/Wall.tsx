@@ -1,4 +1,4 @@
-import { useRef, useState, type CSSProperties, type PointerEvent } from "react"
+import { useRef, useState, type CSSProperties, type MouseEvent, type PointerEvent } from "react"
 import {
   INK_COLORS,
   LEVEL_SIZE,
@@ -62,14 +62,8 @@ export function Pinboard({
   const [draft, setDraft] = useState<number[] | null>(null)
   const boardRef = useRef<HTMLDivElement>(null)
   const paperEls = useRef(new Map<string, HTMLElement>())
-  const dragRef = useRef<{
-    id: string
-    pointerId: number
-    x: number
-    y: number
-    lx: number
-    ly: number
-  } | null>(null)
+  const dragRef = useRef(false)
+  const drawRef = useRef(false)
   const liveRef = useRef({ x: 0, y: 0 })
   const draftRef = useRef<number[]>([])
   const active = profile.cards.filter((c) => !isCardComplete(c, today))
@@ -82,114 +76,119 @@ export function Pinboard({
     return base
   }
 
-  function onTapeDown(e: PointerEvent<HTMLButtonElement>, card: Card) {
-    if (mode !== "arrange") return
-    e.preventDefault()
-    e.stopPropagation()
+  function pointOnBoard(clientX: number, clientY: number): [number, number] | null {
+    const el = boardRef.current
+    if (!el) return null
+    const r = el.getBoundingClientRect()
+    if (r.width < 1 || r.height < 1) return null
+    return [(clientX - r.left) / r.width, (clientY - r.top) / r.height]
+  }
+
+  function beginDrag(clientX: number, clientY: number, card: Card) {
+    if (mode !== "arrange" || dragRef.current) return
     const board = boardRef.current
     if (!board) return
-    e.currentTarget.setPointerCapture(e.pointerId)
     const layout = layoutOf(card)
-    dragRef.current = {
-      id: card.id,
-      pointerId: e.pointerId,
-      x: e.clientX,
-      y: e.clientY,
-      lx: layout.x,
-      ly: layout.y,
-    }
+    const origin = { x: clientX, y: clientY, lx: layout.x, ly: layout.y }
+    const z = nextZ(profile.cards)
+    dragRef.current = true
     liveRef.current = { x: layout.x, y: layout.y }
     setDrag({ id: card.id, x: layout.x, y: layout.y })
+
+    function move(ev: globalThis.MouseEvent) {
+      const el = boardRef.current
+      if (!el) return
+      const r = el.getBoundingClientRect()
+      const paper = paperEls.current.get(card.id)
+      const maxX = paper
+        ? Math.max(0, ((r.width - paper.offsetWidth) / r.width) * 100)
+        : 70
+      const maxY = paper
+        ? Math.max(0, ((r.height - paper.offsetHeight) / r.height) * 100)
+        : 80
+      const x = Math.min(
+        maxX,
+        Math.max(0, origin.lx + ((ev.clientX - origin.x) / r.width) * 100),
+      )
+      const y = Math.min(
+        maxY,
+        Math.max(0, origin.ly + ((ev.clientY - origin.y) / r.height) * 100),
+      )
+      liveRef.current = { x, y }
+      setDrag({ id: card.id, x, y })
+    }
+
+    function up() {
+      if (!dragRef.current) return
+      dragRef.current = false
+      window.removeEventListener("pointermove", move)
+      window.removeEventListener("mousemove", move)
+      window.removeEventListener("pointerup", up)
+      window.removeEventListener("mouseup", up)
+      setDrag(null)
+      onLayout(card.id, {
+        ...layout,
+        x: liveRef.current.x,
+        y: liveRef.current.y,
+        z,
+      })
+    }
+
+    window.addEventListener("pointermove", move)
+    window.addEventListener("mousemove", move)
+    window.addEventListener("pointerup", up)
+    window.addEventListener("mouseup", up)
   }
 
-  function onTapeMove(e: PointerEvent<HTMLButtonElement>) {
-    const d = dragRef.current
-    if (!d || e.pointerId !== d.pointerId) return
-    const board = boardRef.current
-    if (!board) return
-    const r = board.getBoundingClientRect()
-    const paper = paperEls.current.get(d.id)
-    const maxX = paper
-      ? Math.max(0, ((r.width - paper.offsetWidth) / r.width) * 100)
-      : 70
-    const maxY = paper
-      ? Math.max(0, ((r.height - paper.offsetHeight) / r.height) * 100)
-      : 80
-    const x = Math.min(
-      maxX,
-      Math.max(0, d.lx + ((e.clientX - d.x) / r.width) * 100),
-    )
-    const y = Math.min(
-      maxY,
-      Math.max(0, d.ly + ((e.clientY - d.y) / r.height) * 100),
-    )
-    liveRef.current = { x, y }
-    setDrag({ id: d.id, x, y })
-  }
-
-  function onTapeUp(e: PointerEvent<HTMLButtonElement>, card: Card) {
-    const d = dragRef.current
-    if (!d || e.pointerId !== d.pointerId) return
-    dragRef.current = null
-    setDrag(null)
-    const layout = card.layout ?? layoutOf(card)
-    onLayout(card.id, {
-      ...layout,
-      x: liveRef.current.x,
-      y: liveRef.current.y,
-      z: nextZ(profile.cards),
-    })
-  }
-
-  function localPoint(e: PointerEvent<SVGSVGElement>): [number, number] | null {
-    const svg = e.currentTarget
-    const r = svg.getBoundingClientRect()
-    if (r.width < 1 || r.height < 1) return null
-    return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height]
-  }
-
-  function onDrawDown(e: PointerEvent<SVGSVGElement>) {
-    if (mode !== "draw") return
-    e.preventDefault()
-    e.currentTarget.setPointerCapture(e.pointerId)
-    const p = localPoint(e)
+  function beginDraw(clientX: number, clientY: number) {
+    if (mode !== "draw" || drawRef.current) return
+    const p = pointOnBoard(clientX, clientY)
     if (!p) return
+    drawRef.current = true
     draftRef.current = [...p]
     setDraft(draftRef.current)
-  }
 
-  function onDrawMove(e: PointerEvent<SVGSVGElement>) {
-    if (mode !== "draw" || draftRef.current.length === 0) return
-    if (!e.currentTarget.hasPointerCapture(e.pointerId)) return
-    const p = localPoint(e)
-    if (!p) return
-    const pts = draftRef.current
-    const lastX = pts[pts.length - 2]
-    const lastY = pts[pts.length - 1]
-    if (lastX !== undefined && lastY !== undefined) {
-      const dx = p[0] - lastX
-      const dy = p[1] - lastY
-      if (dx * dx + dy * dy < 0.00002) return
+    function move(ev: globalThis.MouseEvent) {
+      if (!drawRef.current) return
+      const next = pointOnBoard(ev.clientX, ev.clientY)
+      if (!next) return
+      const pts = draftRef.current
+      const lastX = pts[pts.length - 2]
+      const lastY = pts[pts.length - 1]
+      if (lastX !== undefined && lastY !== undefined) {
+        const dx = next[0] - lastX
+        const dy = next[1] - lastY
+        if (dx * dx + dy * dy < 0.00002) return
+      }
+      draftRef.current = [...pts, ...next]
+      setDraft(draftRef.current)
     }
-    draftRef.current = [...pts, ...p]
-    setDraft(draftRef.current)
-  }
 
-  function onDrawUp(e: PointerEvent<SVGSVGElement>) {
-    if (mode !== "draw") return
-    if (!e.currentTarget.hasPointerCapture(e.pointerId) && !draft) return
-    const points = draftRef.current
-    draftRef.current = []
-    setDraft(null)
-    if (points.length < 4) return
-    onWall(
-      appendStroke(wall, {
-        id: newId(),
-        color: ink,
-        width: 3,
-        points,
-      }),
-    )
+    function up() {
+      if (!drawRef.current) return
+      drawRef.current = false
+      window.removeEventListener("pointermove", move)
+      window.removeEventListener("mousemove", move)
+      window.removeEventListener("pointerup", up)
+      window.removeEventListener("mouseup", up)
+      const points = draftRef.current
+      draftRef.current = []
+      setDraft(null)
+      if (points.length < 4) return
+      onWall(
+        appendStroke(wall, {
+          id: newId(),
+          color: ink,
+          width: 3,
+          points,
+        }),
+      )
+    }
+
+    window.addEventListener("pointermove", move)
+    window.addEventListener("mousemove", move)
+    window.addEventListener("pointerup", up)
+    window.addEventListener("mouseup", up)
   }
 
   const strokes = wall.strokes ?? []
@@ -267,10 +266,17 @@ export function Pinboard({
                 type="button"
                 className="tape tape-handle"
                 aria-label={`Move ${card.name}`}
-                onPointerDown={(e) => onTapeDown(e, card)}
-                onPointerMove={onTapeMove}
-                onPointerUp={(e) => onTapeUp(e, card)}
-                onPointerCancel={(e) => onTapeUp(e, card)}
+                onPointerDown={(e: PointerEvent<HTMLButtonElement>) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  beginDrag(e.clientX, e.clientY, card)
+                }}
+                onMouseDown={(e: MouseEvent<HTMLButtonElement>) => {
+                  if (e.button !== 0) return
+                  e.preventDefault()
+                  e.stopPropagation()
+                  beginDrag(e.clientX, e.clientY, card)
+                }}
               />
               <div className="flex items-start justify-between gap-2">
                 <div>
@@ -311,15 +317,19 @@ export function Pinboard({
                 </button>
                 <button
                   type="button"
-                  aria-label="Change paper color"
                   onClick={() => onCyclePaper(card.id)}
-                  className="h-5 w-5 rounded-full ring-1 ring-ink/25"
-                  style={{
-                    backgroundColor:
-                      PAPER_COLORS.find((p) => p.id === paper)?.hex ??
-                      PAPER_COLORS[0].hex,
-                  }}
-                />
+                  className="flex items-center gap-1.5 text-xs text-mute"
+                >
+                  <span
+                    className="h-4 w-4 rounded-full border border-ink/35 shadow-sm"
+                    style={{
+                      backgroundColor:
+                        PAPER_COLORS.find((p) => p.id === paper)?.hex ??
+                        PAPER_COLORS[0].hex,
+                    }}
+                  />
+                  Paper
+                </button>
               </div>
             </article>
           )
@@ -341,10 +351,15 @@ export function Pinboard({
             className="wall-draw-layer"
             viewBox="0 0 1 1"
             preserveAspectRatio="none"
-            onPointerDown={onDrawDown}
-            onPointerMove={onDrawMove}
-            onPointerUp={onDrawUp}
-            onPointerCancel={onDrawUp}
+            onPointerDown={(e: PointerEvent<SVGSVGElement>) => {
+              e.preventDefault()
+              beginDraw(e.clientX, e.clientY)
+            }}
+            onMouseDown={(e: MouseEvent<SVGSVGElement>) => {
+              if (e.button !== 0) return
+              e.preventDefault()
+              beginDraw(e.clientX, e.clientY)
+            }}
           >
             {draft && draft.length >= 4 && (
               <polyline
@@ -413,7 +428,7 @@ export function Pinboard({
 
       {sheet && (
         <div
-          className="fixed inset-0 z-50 flex items-end justify-center bg-desk-deep/55 p-4 sm:items-center"
+          className="fixed inset-0 z-[90] flex items-end justify-center bg-desk-deep/55 p-4 sm:items-center"
           onClick={() => setSheet(false)}
         >
           <div
