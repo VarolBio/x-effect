@@ -17,26 +17,32 @@ import {
   celebrationsForMark,
   consecutiveStreak,
   createCard,
+  cyclePaper,
+  defaultWall,
   derive,
+  ensureLayouts,
   isCardComplete,
   isPerfect,
   levelFromXp,
   markToday,
-  missedYesterday,
   needsMark,
   newId,
+  nextLayout,
   rankFor,
   replaceCard,
   todayISO,
   totalXs,
   unmarkToday,
   type Card,
+  type CardLayout,
   type Celebration,
   type DayCell,
   type Profile,
   type Reason,
+  type Wall,
 } from "./domain/xeffect"
-import { loadProfile, parseProfile, saveProfile } from "./storage"
+import { loadProfile, saveProfile } from "./storage"
+import { InkBurst, Pinboard } from "./Wall"
 
 type Screen = { t: "home" } | { t: "create" } | { t: "card"; id: string }
 
@@ -65,6 +71,34 @@ export default function App() {
     setProfile(derive(next, today))
   }
 
+  function patch(fn: (p: Profile) => Profile) {
+    setProfile((p) => derive(fn(p), today))
+  }
+
+  function onLayout(id: string, layout: CardLayout) {
+    patch((p) => {
+      const c = p.cards.find((x) => x.id === id)
+      if (!c) return p
+      return replaceCard(p, { ...c, layout })
+    })
+  }
+
+  function onWall(wall: Wall) {
+    patch((p) => ({ ...p, wall }))
+  }
+
+  function onCyclePaper(id: string) {
+    patch((p) => {
+      const c = p.cards.find((x) => x.id === id)
+      if (!c) return p
+      const layout = c.layout ?? nextLayout(p.cards)
+      return replaceCard(p, {
+        ...c,
+        layout: { ...layout, paper: cyclePaper(layout.paper) },
+      })
+    })
+  }
+
   function onMark(target: Card) {
     const prevXs = totalXs(target)
     const oldXp = profile.xp
@@ -87,12 +121,15 @@ export default function App() {
   }
 
   function onCreate(input: { name: string; why: string; reward: string }) {
-    const made = createCard({
-      name: input.name,
-      why: input.why,
-      reward: input.reward,
-      startDate: today,
-    })
+    const made = {
+      ...createCard({
+        name: input.name,
+        why: input.why,
+        reward: input.reward,
+        startDate: today,
+      }),
+      layout: nextLayout(profile.cards),
+    }
     commit({ ...profile, cards: [...profile.cards, made] })
     setScreen({ t: "card", id: made.id })
   }
@@ -101,54 +138,76 @@ export default function App() {
     ? profile.cards.find((c) => c.id === noteDay.cardId)
     : undefined
 
+  const wall = profile.wall ?? defaultWall()
+
   return (
-    <div className="desk">
+    <div className={`desk wall-${wall.texture}`}>
       <div className="grain" aria-hidden="true" />
       <Dust />
-      <div className="relative z-[1] mx-auto min-h-svh max-w-lg px-4 py-8">
-        <Header
-          profile={profile}
-          onHome={() => setScreen({ t: "home" })}
-          onRanks={() => setRanksOpen(true)}
+      {wall.tint ? (
+        <div
+          className="wall-tint"
+          style={{ background: wall.tint }}
+          aria-hidden="true"
         />
+      ) : null}
+      <div className="relative z-[1] min-h-svh px-4 py-8">
+        <div
+          className={
+            screen.t === "home" ? "mx-auto max-w-3xl" : "mx-auto max-w-lg"
+          }
+        >
+          <Header
+            profile={profile}
+            onHome={() => setScreen({ t: "home" })}
+            onRanks={() => setRanksOpen(true)}
+          />
+        </div>
         {screen.t === "home" && (
-          <Home
+          <Pinboard
             profile={profile}
             today={today}
             burst={burst}
             onOpen={(id) => setScreen({ t: "card", id })}
             onCreate={() => setScreen({ t: "create" })}
             onMark={onMark}
-            onImport={(next) => commit(next)}
+            onImport={(next) => commit(ensureLayouts(next))}
+            onLayout={onLayout}
+            onWall={onWall}
+            onCyclePaper={onCyclePaper}
           />
         )}
         {screen.t === "create" && (
-          <CreateForm
-            onCancel={() => setScreen({ t: "home" })}
-            onCreate={onCreate}
-          />
+          <div className="mx-auto max-w-lg">
+            <CreateForm
+              onCancel={() => setScreen({ t: "home" })}
+              onCreate={onCreate}
+            />
+          </div>
         )}
         {screen.t === "card" && card && (
-          <CardScreen
-            card={card}
-            profile={profile}
-            today={today}
-            burst={burst}
-            onBack={() => setScreen({ t: "home" })}
-            onMark={() => onMark(card)}
-            onNote={(date) => setNoteDay({ cardId: card.id, date })}
-            onDelete={() => {
-              if (!confirm(`Delete “${card.name}”?`)) return
-              commit({
-                ...profile,
-                cards: profile.cards.filter((c) => c.id !== card.id),
-              })
-              setScreen({ t: "home" })
-            }}
-          />
+          <div className="mx-auto max-w-lg">
+            <CardScreen
+              card={card}
+              profile={profile}
+              today={today}
+              burst={burst}
+              onBack={() => setScreen({ t: "home" })}
+              onMark={() => onMark(card)}
+              onNote={(date) => setNoteDay({ cardId: card.id, date })}
+              onDelete={() => {
+                if (!confirm(`Delete “${card.name}”?`)) return
+                commit({
+                  ...profile,
+                  cards: profile.cards.filter((c) => c.id !== card.id),
+                })
+                setScreen({ t: "home" })
+              }}
+            />
+          </div>
         )}
         {screen.t === "card" && !card && (
-          <p className="mt-8 text-mute">That card is gone.</p>
+          <p className="mx-auto mt-8 max-w-lg text-mute">That card is gone.</p>
         )}
       </div>
       {ranksOpen && (
@@ -255,12 +314,12 @@ function Header({
           className="flex items-center gap-2.5"
         >
           <LogoMark />
-          <span className="why-hand text-3xl tracking-tight text-cream">
+          <span className="why-hand text-3xl tracking-tight text-cream drop-shadow">
             X Effect
           </span>
         </button>
         <button type="button" onClick={onRanks} className="text-right">
-          <span className="block why-hand text-lg leading-tight text-cream">
+          <span className="block why-hand text-lg leading-tight text-cream drop-shadow">
             {rank.name}
           </span>
           <span className="text-xs text-mute">
@@ -303,229 +362,6 @@ function LogoMark() {
     <span className="grid h-9 w-9 place-items-center rounded-sm bg-paper text-x shadow-md">
       <XInk animate={false} />
     </span>
-  )
-}
-
-function Home({
-  profile,
-  today,
-  burst,
-  onOpen,
-  onCreate,
-  onMark,
-  onImport,
-}: {
-  profile: Profile
-  today: string
-  burst: number
-  onOpen: (id: string) => void
-  onCreate: () => void
-  onMark: (card: Card) => void
-  onImport: (next: Profile) => void
-}) {
-  const active = profile.cards.filter((c) => !isCardComplete(c, today))
-  const framed = profile.cards.filter((c) => isCardComplete(c, today))
-  const unmarked = active.filter((c) => needsMark(c, today))
-  const holeToday = active.some((c) => missedYesterday(c, today))
-
-  if (profile.cards.length === 0) {
-    return (
-      <div className="index-card relative px-6 pb-8 pt-10">
-        <span className="tape" aria-hidden="true" />
-        <HeroCard />
-        <h1 className="why-hand mt-5 text-center text-3xl leading-tight">
-          49 days. One X a day.
-        </h1>
-        <p className="mt-4 text-center text-mute">
-          Miss a day? Leave a hole. Keep going. The card still finishes.
-        </p>
-        <p className="mt-2 text-center text-mute">
-          Write why you&apos;re doing this — you&apos;ll need it.
-        </p>
-        <p className="mt-4 text-center text-sm text-mute">
-          Each X is {XP_PER_X} XP. Every {LEVEL_SIZE} XP you rank up — a new
-          name on the desk. Tap your rank anytime to see the ladder.
-        </p>
-        <button
-          type="button"
-          onClick={onCreate}
-          className="btn-mark mt-8 w-full rounded-md px-4 py-3 text-lg text-white"
-        >
-          Start a card
-        </button>
-        <BackupBar profile={profile} onImport={onImport} />
-      </div>
-    )
-  }
-
-  return (
-    <div className="space-y-6">
-      {unmarked.length > 0 ? (
-        <section className="space-y-4">
-          {holeToday && (
-            <p className="text-center text-sm text-mute">
-              Hole on the card. Today still gets an X.
-            </p>
-          )}
-          {unmarked.map((card) => (
-            <div key={card.id} className="index-card relative p-5 pt-7">
-              <span className="tape" aria-hidden="true" />
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="why-hand text-2xl">{card.name}</p>
-                  <p className="mt-1 text-sm text-mute">
-                    {consecutiveStreak(card, today)} streak · {totalXs(card)}{" "}
-                    X&apos;s
-                  </p>
-                </div>
-                <MiniGrid
-                  card={card}
-                  today={today}
-                  reasons={profile.reasons}
-                />
-              </div>
-              <div className="relative mt-4">
-                {burst > 0 && <InkBurst key={burst} />}
-                <button
-                  type="button"
-                  onClick={() => onMark(card)}
-                  className="btn-mark w-full rounded-md px-4 py-3.5 text-lg text-white"
-                >
-                  Mark today&apos;s X
-                </button>
-              </div>
-              <button
-                type="button"
-                onClick={() => onOpen(card.id)}
-                className="mt-3 w-full text-center text-sm text-mute underline-offset-2 hover:underline"
-              >
-                Open card
-              </button>
-            </div>
-          ))}
-        </section>
-      ) : (
-        <div className="index-card px-4 py-5 text-center">
-          <p className="why-hand text-xl">Chain intact.</p>
-          <p className="mt-1 text-sm text-mute">See you tomorrow.</p>
-        </div>
-      )}
-
-      <section>
-        <h2 className="mb-2 text-xs font-medium uppercase tracking-[0.18em] text-mute">
-          Cards
-        </h2>
-        <ul className="space-y-2">
-          {active.map((card) => (
-            <li key={card.id}>
-              <button
-                type="button"
-                onClick={() => onOpen(card.id)}
-                className="index-card flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
-              >
-                <span className="why-hand text-lg">{card.name}</span>
-                <span className="flex items-center gap-3">
-                  <MiniGrid
-                    card={card}
-                    today={today}
-                    reasons={profile.reasons}
-                  />
-                  <span className="text-sm text-mute">{totalXs(card)}/49</span>
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
-        <button
-          type="button"
-          onClick={onCreate}
-          className="mt-3 w-full rounded-md border border-cream/20 px-4 py-2 text-sm text-cream/80"
-        >
-          New card
-        </button>
-      </section>
-
-      {framed.length > 0 && (
-        <section>
-          <h2 className="mb-2 text-xs font-medium uppercase tracking-[0.18em] text-mute">
-            Framed
-          </h2>
-          <ul className="space-y-2">
-            {framed.map((card) => (
-              <li key={card.id}>
-                <button
-                  type="button"
-                  onClick={() => onOpen(card.id)}
-                  className="index-card flex w-full items-center justify-between px-4 py-3 text-left ring-1 ring-today/70"
-                >
-                  <span className="why-hand text-lg">{card.name}</span>
-                  <span className="text-sm text-mute">
-                    {isPerfect(card) ? "Perfect" : `${totalXs(card)} X's`}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-      <BackupBar profile={profile} onImport={onImport} />
-    </div>
-  )
-}
-
-function BackupBar({
-  profile,
-  onImport,
-}: {
-  profile: Profile
-  onImport: (next: Profile) => void
-}) {
-  return (
-    <p className="mt-4 flex justify-center gap-5 text-sm text-mute">
-      <button
-        type="button"
-        className="underline-offset-2 hover:underline"
-        onClick={() => {
-          const blob = new Blob([JSON.stringify(profile)], {
-            type: "application/json",
-          })
-          const url = URL.createObjectURL(blob)
-          const a = document.createElement("a")
-          a.href = url
-          a.download = "x-effect-backup.json"
-          a.click()
-          URL.revokeObjectURL(url)
-        }}
-      >
-        Export cards
-      </button>
-      <label className="cursor-pointer underline-offset-2 hover:underline">
-        Import
-        <input
-          type="file"
-          accept="application/json"
-          className="sr-only"
-          onChange={(e) => {
-            const file = e.target.files?.[0]
-            e.target.value = ""
-            if (!file) return
-            void file.text().then((raw) => {
-              const next = parseProfile(raw)
-              if (!next) {
-                alert("That file isn't an X Effect backup.")
-                return
-              }
-              if (
-                !confirm("Replace the cards on this device with the backup?")
-              ) {
-                return
-              }
-              onImport(next)
-            })
-          }}
-        />
-      </label>
-    </p>
   )
 }
 
@@ -757,64 +593,6 @@ function CardScreen({
   )
 }
 
-function MiniGrid({
-  card,
-  today,
-  reasons,
-}: {
-  card: Card
-  today: string
-  reasons: Reason[]
-}) {
-  return (
-    <span
-      className="grid shrink-0 grid-cols-7 gap-px"
-      aria-hidden="true"
-    >
-      {card.cells.map((cell) => {
-        const kind = cellKind(cell, today)
-        const reason = cell.reasonId
-          ? reasons.find((r) => r.id === cell.reasonId)
-          : undefined
-        return (
-          <span
-            key={cell.date}
-            className={[
-              "h-1.5 w-1.5 rounded-[1px]",
-              reason
-                ? ""
-                : kind === "x"
-                  ? "bg-x"
-                  : kind === "today"
-                    ? "bg-today"
-                    : kind === "hole"
-                      ? "bg-ink/25"
-                      : "bg-ink/10",
-            ].join(" ")}
-            style={reason ? { backgroundColor: reason.color } : undefined}
-          />
-        )
-      })}
-    </span>
-  )
-}
-
-function HeroCard() {
-  const filled = new Set([0, 1, 2, 3, 4, 7, 8, 9])
-  return (
-    <div className="mx-auto grid w-44 grid-cols-7 gap-1" aria-hidden="true">
-      {Array.from({ length: 49 }, (_, i) => (
-        <span
-          key={i}
-          className="grid aspect-square place-items-center rounded-[2px] border border-ink/15 bg-white/40"
-        >
-          {filled.has(i) && <XInk animate={i === 9} />}
-        </span>
-      ))}
-    </div>
-  )
-}
-
 function XInk({
   animate = true,
   color,
@@ -832,20 +610,6 @@ function XInk({
       <path className="x-stroke" d="M5.2 5.4 L18.6 19.1" />
       <path className="x-stroke x-stroke-b" d="M18.8 5.1 L5.4 18.8" />
     </svg>
-  )
-}
-
-function InkBurst() {
-  return (
-    <span className="pointer-events-none absolute inset-0 z-[1]" aria-hidden="true">
-      {Array.from({ length: 10 }, (_, i) => (
-        <span
-          key={i}
-          className="ink-dot"
-          style={{ "--a": `${i * 36}deg` } as CSSProperties}
-        />
-      ))}
-    </span>
   )
 }
 

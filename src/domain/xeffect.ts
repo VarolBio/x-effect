@@ -26,6 +26,14 @@ export type DayCell = {
   note?: string
 }
 
+export type CardLayout = {
+  x: number
+  y: number
+  z: number
+  rot: number
+  paper?: string
+}
+
 export type Card = {
   id: string
   name: string
@@ -33,6 +41,22 @@ export type Card = {
   reward?: string
   startDate: string
   cells: DayCell[]
+  layout?: CardLayout
+}
+
+export type WallTexture = "desk" | "cork" | "paint" | "brick"
+
+export type WallStroke = {
+  id: string
+  color: string
+  width: number
+  points: number[]
+}
+
+export type Wall = {
+  texture: WallTexture
+  tint?: string
+  strokes?: WallStroke[]
 }
 
 export type Reason = { id: string; label: string; color: string }
@@ -43,6 +67,7 @@ export type Profile = {
   badges: string[]
   reasons: Reason[]
   cards: Card[]
+  wall?: Wall
 }
 
 export type Celebration = { title: string; body: string }
@@ -79,6 +104,35 @@ export const PRESET_COLORS = [
   "#64748b",
 ]
 
+export const PAPER_COLORS = [
+  { id: "cream", hex: "#f6efe2" },
+  { id: "yellow", hex: "#f3e07a" },
+  { id: "pink", hex: "#f3c1d2" },
+  { id: "blue", hex: "#c8def0" },
+  { id: "green", hex: "#cfe6b8" },
+] as const
+
+export const WALL_TEXTURES: { id: WallTexture; label: string }[] = [
+  { id: "desk", label: "Desk" },
+  { id: "cork", label: "Cork" },
+  { id: "paint", label: "Paint" },
+  { id: "brick", label: "Brick" },
+]
+
+export const WALL_TINTS: { id: string; label: string }[] = [
+  { id: "", label: "None" },
+  { id: "#8b5a2b", label: "Warm" },
+  { id: "#3d4f6f", label: "Cool" },
+  { id: "#6b2d3c", label: "Rose" },
+  { id: "#2f4a32", label: "Moss" },
+]
+
+export const INK_COLORS = ["#c41e3a", "#1c1612", "#d4a017", "#f6efe2", "#3b82f6"]
+
+// ponytail: 40 strokes / 200 coords ceiling. Upgrade: IndexedDB if doodles get huge.
+export const MAX_STROKES = 40
+export const MAX_STROKE_POINTS = 200
+
 export function toISODate(d: Date): string {
   const y = d.getFullYear()
   const m = String(d.getMonth() + 1).padStart(2, "0")
@@ -114,7 +168,103 @@ export function emptyProfile(): Profile {
     badges: [],
     reasons: DEFAULT_REASONS.map((r) => ({ ...r })),
     cards: [],
+    wall: defaultWall(),
   }
+}
+
+export function defaultWall(): Wall {
+  return { texture: "desk" }
+}
+
+export function clamp(n: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, n))
+}
+
+export function layoutForIndex(index: number, z = index + 2): CardLayout {
+  const col = index % 2
+  const row = Math.floor(index / 2)
+  return {
+    x: 3 + col * 49,
+    y: 6 + row * 24,
+    z,
+    rot: ((index * 5) % 7) - 3,
+    paper: "cream",
+  }
+}
+
+export function clampLayout(
+  layout: CardLayout,
+  maxX = 92,
+  maxY = 88,
+): CardLayout {
+  return {
+    ...layout,
+    x: clamp(layout.x, 0, maxX),
+    y: clamp(layout.y, 0, maxY),
+    rot: clamp(layout.rot, -8, 8),
+    z: Math.max(1, layout.z),
+  }
+}
+
+export function nextZ(cards: Card[]): number {
+  let z = 1
+  for (const c of cards) {
+    if (c.layout) z = Math.max(z, c.layout.z)
+  }
+  return z + 1
+}
+
+export function nextLayout(cards: Card[]): CardLayout {
+  return clampLayout(layoutForIndex(cards.length, nextZ(cards)))
+}
+
+export function ensureLayouts(profile: Profile): Profile {
+  let changed = false
+  const cards = profile.cards.map((c, i) => {
+    if (c.layout) return c
+    changed = true
+    return { ...c, layout: layoutForIndex(i) }
+  })
+  const wall = profile.wall ?? defaultWall()
+  if (!profile.wall) changed = true
+  if (!changed) return profile
+  return { ...profile, cards, wall }
+}
+
+export function cyclePaper(current?: string): string {
+  const i = PAPER_COLORS.findIndex((p) => p.id === current)
+  const from = i < 0 ? 0 : i
+  return PAPER_COLORS[(from + 1) % PAPER_COLORS.length]!.id
+}
+
+export function capStrokePoints(points: number[]): number[] {
+  const even = points.length % 2 === 0 ? points : points.slice(0, -1)
+  if (even.length <= MAX_STROKE_POINTS) return even
+  const pairs = even.length / 2
+  const maxPairs = Math.floor(MAX_STROKE_POINTS / 2)
+  const out: number[] = []
+  for (let i = 0; i < maxPairs; i++) {
+    const src =
+      i === maxPairs - 1
+        ? pairs - 1
+        : Math.round((i * (pairs - 1)) / (maxPairs - 1))
+    out.push(even[src * 2]!, even[src * 2 + 1]!)
+  }
+  return out
+}
+
+export function appendStroke(wall: Wall, stroke: WallStroke): Wall {
+  const points = capStrokePoints(stroke.points)
+  if (points.length < 4) return wall
+  const next = [...(wall.strokes ?? []), { ...stroke, points }]
+  const extra = next.length - MAX_STROKES
+  return { ...wall, strokes: extra > 0 ? next.slice(extra) : next }
+}
+
+export function undoStroke(wall: Wall): Wall {
+  const strokes = wall.strokes ?? []
+  if (strokes.length === 0) return wall
+  return { ...wall, strokes: strokes.slice(0, -1) }
 }
 
 export function newId(): string {

@@ -1,19 +1,29 @@
 import { describe, expect, it } from "vitest"
 import {
   addDays,
+  appendStroke,
   celebrationsForMark,
   annotateDay,
+  clampLayout,
   computeBadges,
   computeXp,
   consecutiveStreak,
   createCard,
+  cyclePaper,
+  defaultWall,
   derive,
+  ensureLayouts,
   isCardComplete,
   isPerfect,
+  layoutForIndex,
   levelFromXp,
   markToday,
+  MAX_STROKE_POINTS,
+  MAX_STROKES,
+  nextLayout,
   rankFor,
   totalXs,
+  undoStroke,
   unmarkToday,
   type Card,
   type Profile,
@@ -218,5 +228,78 @@ describe("X Effect cards", () => {
     const next = derive(profileFor([card]), TODAY)
     expect(next.xp).toBe(10)
     expect(next.badges).toEqual(["first_x"])
+  })
+})
+
+describe("pinboard layout", () => {
+  it("staggers cards and clamps them onto the wall", () => {
+    const a = layoutForIndex(0)
+    const b = layoutForIndex(1)
+    expect(a.x).toBeLessThan(b.x)
+    expect(a.paper).toBe("cream")
+    expect(clampLayout({ ...a, x: -20, y: 200, rot: 40, z: 0 })).toEqual({
+      ...a,
+      x: 0,
+      y: 88,
+      rot: 8,
+      z: 1,
+    })
+  })
+
+  it("fills missing layouts and a default wall without wiping old backups", () => {
+    const card = createCard({
+      id: "a",
+      name: "Walk",
+      why: "y",
+      startDate: TODAY,
+    })
+    const old: Profile = {
+      version: 1,
+      xp: 0,
+      badges: [],
+      reasons: [],
+      cards: [card],
+    }
+    const next = ensureLayouts(old)
+    expect(old.wall).toBeUndefined()
+    expect(next.wall?.texture).toBe("desk")
+    expect(next.cards[0]?.layout).toEqual(layoutForIndex(0))
+    expect(ensureLayouts(next)).toBe(next)
+  })
+
+  it("cycles paper colors and caps doodles", () => {
+    expect(cyclePaper(undefined)).toBe("yellow")
+    expect(cyclePaper("green")).toBe("cream")
+    const wall = defaultWall()
+    const long: number[] = []
+    for (let i = 0; i < 300; i++) long.push(i / 300, i / 300)
+    const one = appendStroke(wall, {
+      id: "s",
+      color: "#c41e3a",
+      width: 3,
+      points: long,
+    })
+    expect(one.strokes?.[0]?.points.length).toBeLessThanOrEqual(MAX_STROKE_POINTS)
+    expect(one.strokes?.[0]?.points.length).toBeGreaterThanOrEqual(4)
+    let filled = one
+    for (let i = 0; i < MAX_STROKES + 5; i++) {
+      filled = appendStroke(filled, {
+        id: `s${i}`,
+        color: "#1c1612",
+        width: 2,
+        points: [0, 0, 1, 1],
+      })
+    }
+    expect(filled.strokes).toHaveLength(MAX_STROKES)
+    expect(undoStroke(filled).strokes).toHaveLength(MAX_STROKES - 1)
+    expect(appendStroke(wall, { id: "x", color: "#000", width: 1, points: [0, 0] })).toBe(wall)
+  })
+
+  it("places a new card above existing ones", () => {
+    const card = {
+      ...createCard({ id: "a", name: "Walk", why: "y", startDate: TODAY }),
+      layout: layoutForIndex(0, 4),
+    }
+    expect(nextLayout([card]).z).toBe(5)
   })
 })
