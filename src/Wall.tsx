@@ -33,6 +33,47 @@ import {
 } from "./domain/xeffect"
 import { parseProfile } from "./storage"
 
+function clientOf(ev: Event): { x: number; y: number } | null {
+  if (typeof TouchEvent !== "undefined" && ev instanceof TouchEvent) {
+    const t = ev.touches[0] ?? ev.changedTouches[0]
+    return t ? { x: t.clientX, y: t.clientY } : null
+  }
+  if ("clientX" in ev && typeof (ev as PointerEvent).clientX === "number") {
+    return { x: (ev as PointerEvent).clientX, y: (ev as PointerEvent).clientY }
+  }
+  return null
+}
+
+const holdOpts: AddEventListenerOptions = { passive: false, capture: true }
+
+function listenHold(
+  move: (clientX: number, clientY: number) => void,
+  end: () => void,
+) {
+  function onMove(ev: Event) {
+    ev.preventDefault()
+    const p = clientOf(ev)
+    if (!p) return
+    move(p.x, p.y)
+  }
+  function onUp(ev: Event) {
+    ev.preventDefault()
+    window.removeEventListener("pointermove", onMove, holdOpts)
+    window.removeEventListener("pointerup", onUp, holdOpts)
+    window.removeEventListener("pointercancel", onUp, holdOpts)
+    window.removeEventListener("touchmove", onMove, holdOpts)
+    window.removeEventListener("touchend", onUp, holdOpts)
+    window.removeEventListener("touchcancel", onUp, holdOpts)
+    end()
+  }
+  window.addEventListener("pointermove", onMove, holdOpts)
+  window.addEventListener("pointerup", onUp, holdOpts)
+  window.addEventListener("pointercancel", onUp, holdOpts)
+  window.addEventListener("touchmove", onMove, holdOpts)
+  window.addEventListener("touchend", onUp, holdOpts)
+  window.addEventListener("touchcancel", onUp, holdOpts)
+}
+
 type Mode = "arrange" | "draw"
 
 export function Pinboard({
@@ -96,73 +137,64 @@ export function Pinboard({
     return [(clientX - r.left) / r.width, (clientY - r.top) / r.height]
   }
 
-  function beginDrag(e: ReactPointerEvent<HTMLButtonElement>, card: Card) {
+  function beginDrag(e: ReactPointerEvent<HTMLElement>, card: Card) {
     if (mode !== "arrange" || dragRef.current) return
     if (e.pointerType === "mouse" && e.button !== 0) return
     const board = boardRef.current
     if (!board) return
     e.preventDefault()
-    e.currentTarget.setPointerCapture(e.pointerId)
+    e.nativeEvent.preventDefault()
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId)
+    } catch {
+      /* capture is optional; touchmove still drives the drag */
+    }
     const layout = layoutOf(card)
     const origin = { x: e.clientX, y: e.clientY, lx: layout.x, ly: layout.y }
     const z = nextZ(profile.cards)
-    const hold: AddEventListenerOptions = { passive: false, capture: true }
     dragRef.current = true
     liveRef.current = { x: layout.x, y: layout.y }
     setDrag({ id: card.id, x: layout.x, y: layout.y })
     document.documentElement.classList.add("wall-locked")
     board.classList.add("is-grabbing")
 
-    function move(ev: PointerEvent) {
-      ev.preventDefault()
-      const el = boardRef.current
-      if (!el) return
-      const r = el.getBoundingClientRect()
-      const paper = paperEls.current.get(card.id)
-      const maxX = paper
-        ? Math.max(0, ((r.width - paper.offsetWidth) / r.width) * 100)
-        : 70
-      const maxY = paper
-        ? Math.max(0, ((r.height - paper.offsetHeight) / r.height) * 100)
-        : 80
-      const x = Math.min(
-        maxX,
-        Math.max(0, origin.lx + ((ev.clientX - origin.x) / r.width) * 100),
-      )
-      const y = Math.min(
-        maxY,
-        Math.max(0, origin.ly + ((ev.clientY - origin.y) / r.height) * 100),
-      )
-      liveRef.current = { x, y }
-      setDrag({ id: card.id, x, y })
-    }
-
-    function blockTouch(ev: TouchEvent) {
-      ev.preventDefault()
-    }
-
-    function up() {
-      if (!dragRef.current) return
-      dragRef.current = false
-      window.removeEventListener("pointermove", move, hold)
-      window.removeEventListener("pointerup", up, hold)
-      window.removeEventListener("pointercancel", up, hold)
-      window.removeEventListener("touchmove", blockTouch, hold)
-      document.documentElement.classList.remove("wall-locked")
-      boardRef.current?.classList.remove("is-grabbing")
-      setDrag(null)
-      onLayout(card.id, {
-        ...layout,
-        x: liveRef.current.x,
-        y: liveRef.current.y,
-        z,
-      })
-    }
-
-    window.addEventListener("pointermove", move, hold)
-    window.addEventListener("pointerup", up, hold)
-    window.addEventListener("pointercancel", up, hold)
-    window.addEventListener("touchmove", blockTouch, hold)
+    listenHold(
+      (clientX, clientY) => {
+        const el = boardRef.current
+        if (!el) return
+        const r = el.getBoundingClientRect()
+        const paper = paperEls.current.get(card.id)
+        const maxX = paper
+          ? Math.max(0, ((r.width - paper.offsetWidth) / r.width) * 100)
+          : 70
+        const maxY = paper
+          ? Math.max(0, ((r.height - paper.offsetHeight) / r.height) * 100)
+          : 80
+        const x = Math.min(
+          maxX,
+          Math.max(0, origin.lx + ((clientX - origin.x) / r.width) * 100),
+        )
+        const y = Math.min(
+          maxY,
+          Math.max(0, origin.ly + ((clientY - origin.y) / r.height) * 100),
+        )
+        liveRef.current = { x, y }
+        setDrag({ id: card.id, x, y })
+      },
+      () => {
+        if (!dragRef.current) return
+        dragRef.current = false
+        document.documentElement.classList.remove("wall-locked")
+        boardRef.current?.classList.remove("is-grabbing")
+        setDrag(null)
+        onLayout(card.id, {
+          ...layout,
+          x: liveRef.current.x,
+          y: liveRef.current.y,
+          z,
+        })
+      },
+    )
   }
 
   function beginDraw(e: ReactPointerEvent<SVGSVGElement>) {
@@ -171,63 +203,54 @@ export function Pinboard({
     const p = pointOnBoard(e.clientX, e.clientY)
     if (!p) return
     e.preventDefault()
-    e.currentTarget.setPointerCapture(e.pointerId)
+    e.nativeEvent.preventDefault()
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId)
+    } catch {
+      /* capture is optional; touchmove still drives the stroke */
+    }
     const board = boardRef.current
-    const hold: AddEventListenerOptions = { passive: false, capture: true }
     drawRef.current = true
     draftRef.current = [...p]
     setDraft(draftRef.current)
     document.documentElement.classList.add("wall-locked")
     board?.classList.add("is-grabbing")
 
-    function move(ev: PointerEvent) {
-      if (!drawRef.current) return
-      ev.preventDefault()
-      const next = pointOnBoard(ev.clientX, ev.clientY)
-      if (!next) return
-      const pts = draftRef.current
-      const lastX = pts[pts.length - 2]
-      const lastY = pts[pts.length - 1]
-      if (lastX !== undefined && lastY !== undefined) {
-        const dx = next[0] - lastX
-        const dy = next[1] - lastY
-        if (dx * dx + dy * dy < 0.00002) return
-      }
-      draftRef.current = [...pts, ...next]
-      setDraft(draftRef.current)
-    }
-
-    function blockTouch(ev: TouchEvent) {
-      ev.preventDefault()
-    }
-
-    function up() {
-      if (!drawRef.current) return
-      drawRef.current = false
-      window.removeEventListener("pointermove", move, hold)
-      window.removeEventListener("pointerup", up, hold)
-      window.removeEventListener("pointercancel", up, hold)
-      window.removeEventListener("touchmove", blockTouch, hold)
-      document.documentElement.classList.remove("wall-locked")
-      boardRef.current?.classList.remove("is-grabbing")
-      const points = draftRef.current
-      draftRef.current = []
-      setDraft(null)
-      if (points.length < 4) return
-      onWall(
-        appendStroke(wall, {
-          id: newId(),
-          color: ink,
-          width: 3,
-          points,
-        }),
-      )
-    }
-
-    window.addEventListener("pointermove", move, hold)
-    window.addEventListener("pointerup", up, hold)
-    window.addEventListener("pointercancel", up, hold)
-    window.addEventListener("touchmove", blockTouch, hold)
+    listenHold(
+      (clientX, clientY) => {
+        if (!drawRef.current) return
+        const next = pointOnBoard(clientX, clientY)
+        if (!next) return
+        const pts = draftRef.current
+        const lastX = pts[pts.length - 2]
+        const lastY = pts[pts.length - 1]
+        if (lastX !== undefined && lastY !== undefined) {
+          const dx = next[0] - lastX
+          const dy = next[1] - lastY
+          if (dx * dx + dy * dy < 0.00002) return
+        }
+        draftRef.current = [...pts, ...next]
+        setDraft(draftRef.current)
+      },
+      () => {
+        if (!drawRef.current) return
+        drawRef.current = false
+        document.documentElement.classList.remove("wall-locked")
+        boardRef.current?.classList.remove("is-grabbing")
+        const points = draftRef.current
+        draftRef.current = []
+        setDraft(null)
+        if (points.length < 4) return
+        onWall(
+          appendStroke(wall, {
+            id: newId(),
+            color: ink,
+            width: 3,
+            points,
+          }),
+        )
+      },
+    )
   }
 
   const strokes = wall.strokes ?? []
@@ -318,14 +341,9 @@ export function Pinboard({
                   PAPER_COLORS[0].hex,
               }}
             >
-              <button
-                type="button"
-                className="tape tape-handle"
-                aria-label={`Move ${card.name}`}
-                onPointerDown={(e: ReactPointerEvent<HTMLButtonElement>) => {
-                  e.stopPropagation()
-                  beginDrag(e, card)
-                }}
+              <TapeHandle
+                label={`Move ${card.name}`}
+                onHold={(e) => beginDrag(e, card)}
               />
               <div className="flex items-start justify-between gap-2">
                 <div>
@@ -567,6 +585,36 @@ function toPoints(points: number[]): string {
     out.push(`${points[i]},${points[i + 1]}`)
   }
   return out.join(" ")
+}
+
+function TapeHandle({
+  label,
+  onHold,
+}: {
+  label: string
+  onHold: (e: ReactPointerEvent<HTMLElement>) => void
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const block = (e: TouchEvent) => e.preventDefault()
+    el.addEventListener("touchstart", block, { passive: false })
+    return () => el.removeEventListener("touchstart", block)
+  }, [])
+  return (
+    <div
+      ref={ref}
+      role="button"
+      tabIndex={0}
+      className="tape tape-handle"
+      aria-label={label}
+      onPointerDown={(e) => {
+        e.stopPropagation()
+        onHold(e)
+      }}
+    />
+  )
 }
 
 function ModeBtn({
