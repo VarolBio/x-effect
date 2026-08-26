@@ -1,4 +1,10 @@
-import { useRef, useState, type CSSProperties, type MouseEvent, type PointerEvent } from "react"
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+} from "react"
 import {
   INK_COLORS,
   LEVEL_SIZE,
@@ -70,6 +76,12 @@ export function Pinboard({
   const unmarked = active.filter((c) => needsMark(c, today))
   const holeToday = active.some((c) => missedYesterday(c, today))
 
+  useEffect(() => {
+    return () => {
+      document.documentElement.classList.remove("wall-locked")
+    }
+  }, [])
+
   function layoutOf(card: Card): CardLayout {
     const base = card.layout ?? { x: 4, y: 8, z: 2, rot: 0, paper: "cream" }
     if (drag?.id === card.id) return { ...base, x: drag.x, y: drag.y }
@@ -84,18 +96,25 @@ export function Pinboard({
     return [(clientX - r.left) / r.width, (clientY - r.top) / r.height]
   }
 
-  function beginDrag(clientX: number, clientY: number, card: Card) {
+  function beginDrag(e: ReactPointerEvent<HTMLButtonElement>, card: Card) {
     if (mode !== "arrange" || dragRef.current) return
+    if (e.pointerType === "mouse" && e.button !== 0) return
     const board = boardRef.current
     if (!board) return
+    e.preventDefault()
+    e.currentTarget.setPointerCapture(e.pointerId)
     const layout = layoutOf(card)
-    const origin = { x: clientX, y: clientY, lx: layout.x, ly: layout.y }
+    const origin = { x: e.clientX, y: e.clientY, lx: layout.x, ly: layout.y }
     const z = nextZ(profile.cards)
+    const hold: AddEventListenerOptions = { passive: false, capture: true }
     dragRef.current = true
     liveRef.current = { x: layout.x, y: layout.y }
     setDrag({ id: card.id, x: layout.x, y: layout.y })
+    document.documentElement.classList.add("wall-locked")
+    board.classList.add("is-grabbing")
 
-    function move(ev: globalThis.MouseEvent) {
+    function move(ev: PointerEvent) {
+      ev.preventDefault()
       const el = boardRef.current
       if (!el) return
       const r = el.getBoundingClientRect()
@@ -118,13 +137,19 @@ export function Pinboard({
       setDrag({ id: card.id, x, y })
     }
 
+    function blockTouch(ev: TouchEvent) {
+      ev.preventDefault()
+    }
+
     function up() {
       if (!dragRef.current) return
       dragRef.current = false
-      window.removeEventListener("pointermove", move)
-      window.removeEventListener("mousemove", move)
-      window.removeEventListener("pointerup", up)
-      window.removeEventListener("mouseup", up)
+      window.removeEventListener("pointermove", move, hold)
+      window.removeEventListener("pointerup", up, hold)
+      window.removeEventListener("pointercancel", up, hold)
+      window.removeEventListener("touchmove", blockTouch, hold)
+      document.documentElement.classList.remove("wall-locked")
+      boardRef.current?.classList.remove("is-grabbing")
       setDrag(null)
       onLayout(card.id, {
         ...layout,
@@ -134,22 +159,30 @@ export function Pinboard({
       })
     }
 
-    window.addEventListener("pointermove", move)
-    window.addEventListener("mousemove", move)
-    window.addEventListener("pointerup", up)
-    window.addEventListener("mouseup", up)
+    window.addEventListener("pointermove", move, hold)
+    window.addEventListener("pointerup", up, hold)
+    window.addEventListener("pointercancel", up, hold)
+    window.addEventListener("touchmove", blockTouch, hold)
   }
 
-  function beginDraw(clientX: number, clientY: number) {
+  function beginDraw(e: ReactPointerEvent<SVGSVGElement>) {
     if (mode !== "draw" || drawRef.current) return
-    const p = pointOnBoard(clientX, clientY)
+    if (e.pointerType === "mouse" && e.button !== 0) return
+    const p = pointOnBoard(e.clientX, e.clientY)
     if (!p) return
+    e.preventDefault()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    const board = boardRef.current
+    const hold: AddEventListenerOptions = { passive: false, capture: true }
     drawRef.current = true
     draftRef.current = [...p]
     setDraft(draftRef.current)
+    document.documentElement.classList.add("wall-locked")
+    board?.classList.add("is-grabbing")
 
-    function move(ev: globalThis.MouseEvent) {
+    function move(ev: PointerEvent) {
       if (!drawRef.current) return
+      ev.preventDefault()
       const next = pointOnBoard(ev.clientX, ev.clientY)
       if (!next) return
       const pts = draftRef.current
@@ -164,13 +197,19 @@ export function Pinboard({
       setDraft(draftRef.current)
     }
 
+    function blockTouch(ev: TouchEvent) {
+      ev.preventDefault()
+    }
+
     function up() {
       if (!drawRef.current) return
       drawRef.current = false
-      window.removeEventListener("pointermove", move)
-      window.removeEventListener("mousemove", move)
-      window.removeEventListener("pointerup", up)
-      window.removeEventListener("mouseup", up)
+      window.removeEventListener("pointermove", move, hold)
+      window.removeEventListener("pointerup", up, hold)
+      window.removeEventListener("pointercancel", up, hold)
+      window.removeEventListener("touchmove", blockTouch, hold)
+      document.documentElement.classList.remove("wall-locked")
+      boardRef.current?.classList.remove("is-grabbing")
       const points = draftRef.current
       draftRef.current = []
       setDraft(null)
@@ -185,10 +224,10 @@ export function Pinboard({
       )
     }
 
-    window.addEventListener("pointermove", move)
-    window.addEventListener("mousemove", move)
-    window.addEventListener("pointerup", up)
-    window.addEventListener("mouseup", up)
+    window.addEventListener("pointermove", move, hold)
+    window.addEventListener("pointerup", up, hold)
+    window.addEventListener("pointercancel", up, hold)
+    window.addEventListener("touchmove", blockTouch, hold)
   }
 
   const strokes = wall.strokes ?? []
@@ -209,34 +248,48 @@ export function Pinboard({
 
       <div
         ref={boardRef}
-        className="wall-board"
-        style={{ minHeight: `${Math.max(160, 40 + rows * 48)}svh` }}
+        className={[
+          "wall-board",
+          profile.cards.length === 0 ? "wall-board-empty" : "",
+        ].join(" ")}
+        style={
+          profile.cards.length === 0
+            ? undefined
+            : { minHeight: `${Math.max(160, 40 + rows * 48)}svh` }
+        }
       >
         {profile.cards.length === 0 && (
-          <div className="index-card relative mx-auto mt-6 max-w-md px-6 pb-8 pt-10">
-            <span className="tape" aria-hidden="true" />
-            <HeroCard />
-            <h1 className="why-hand mt-5 text-center text-3xl leading-tight">
-              49 days. One X a day.
-            </h1>
-            <p className="mt-4 text-center text-mute">
-              Miss a day? Leave a hole. Keep going. The card still finishes.
-            </p>
-            <p className="mt-2 text-center text-mute">
-              Write why you&apos;re doing this — you&apos;ll need it.
-            </p>
-            <p className="mt-4 text-center text-sm text-mute">
-              Each X is {XP_PER_X} XP. Every {LEVEL_SIZE} XP you rank up — a new
-              name on the desk. Tap your rank anytime to see the ladder.
-            </p>
-            <button
-              type="button"
-              onClick={onCreate}
-              className="btn-mark mt-8 w-full rounded-md px-4 py-3 text-lg text-white"
-            >
-              Start a card
-            </button>
-          </div>
+          <>
+            <div className="index-card relative mx-auto mt-6 max-w-md px-6 pb-8 pt-10">
+              <span className="tape" aria-hidden="true" />
+              <HeroCard />
+              <h1 className="why-hand mt-5 text-center text-3xl leading-tight">
+                49 days. One X a day.
+              </h1>
+              <p className="mt-4 text-center text-mute">
+                Miss a day? Leave a hole. Keep going. The card still finishes.
+              </p>
+              <p className="mt-2 text-center text-mute">
+                Write why you&apos;re doing this — you&apos;ll need it.
+              </p>
+              <p className="mt-4 text-center text-sm text-mute">
+                Each X is {XP_PER_X} XP. Every {LEVEL_SIZE} XP you rank up — a
+                new name on the desk. Tap your rank anytime to see the ladder.
+              </p>
+              <button
+                type="button"
+                onClick={onCreate}
+                className="btn-mark mt-8 w-full rounded-md px-4 py-3 text-lg text-white"
+              >
+                Start a card
+              </button>
+            </div>
+            <BackupBar
+              profile={profile}
+              onImport={onImport}
+              className="mt-6"
+            />
+          </>
         )}
 
         {profile.cards.map((card) => {
@@ -269,16 +322,9 @@ export function Pinboard({
                 type="button"
                 className="tape tape-handle"
                 aria-label={`Move ${card.name}`}
-                onPointerDown={(e: PointerEvent<HTMLButtonElement>) => {
-                  e.preventDefault()
+                onPointerDown={(e: ReactPointerEvent<HTMLButtonElement>) => {
                   e.stopPropagation()
-                  beginDrag(e.clientX, e.clientY, card)
-                }}
-                onMouseDown={(e: MouseEvent<HTMLButtonElement>) => {
-                  if (e.button !== 0) return
-                  e.preventDefault()
-                  e.stopPropagation()
-                  beginDrag(e.clientX, e.clientY, card)
+                  beginDrag(e, card)
                 }}
               />
               <div className="flex items-start justify-between gap-2">
@@ -314,25 +360,21 @@ export function Pinboard({
                 <button
                   type="button"
                   onClick={() => onOpen(card.id)}
-                  className="text-sm text-mute underline-offset-2 hover:underline"
+                  className="shrink-0 rounded-md border border-ink/15 bg-white/50 px-3 py-1.5 text-sm"
                 >
                   Open card
                 </button>
                 <button
                   type="button"
                   onClick={() => onCyclePaper(card.id)}
-                  className="flex items-center gap-1.5 text-xs text-mute"
-                >
-                  <span
-                    className="h-4 w-4 rounded-full border border-ink/35 shadow-sm"
-                    style={{
-                      backgroundColor:
-                        PAPER_COLORS.find((p) => p.id === paper)?.hex ??
-                        PAPER_COLORS[0].hex,
-                    }}
-                  />
-                  Paper
-                </button>
+                  aria-label="Paper color"
+                  className="h-6 w-6 rounded-full border border-ink/35 shadow-sm"
+                  style={{
+                    backgroundColor:
+                      PAPER_COLORS.find((p) => p.id === paper)?.hex ??
+                      PAPER_COLORS[0].hex,
+                  }}
+                />
               </div>
             </article>
           )
@@ -354,14 +396,8 @@ export function Pinboard({
             className="wall-draw-layer"
             viewBox="0 0 1 1"
             preserveAspectRatio="none"
-            onPointerDown={(e: PointerEvent<SVGSVGElement>) => {
-              e.preventDefault()
-              beginDraw(e.clientX, e.clientY)
-            }}
-            onMouseDown={(e: MouseEvent<SVGSVGElement>) => {
-              if (e.button !== 0) return
-              e.preventDefault()
-              beginDraw(e.clientX, e.clientY)
+            onPointerDown={(e: ReactPointerEvent<SVGSVGElement>) => {
+              beginDraw(e)
             }}
           >
             {draft && draft.length >= 4 && (
@@ -379,55 +415,59 @@ export function Pinboard({
         )}
       </div>
 
-      <div className="wall-dock">
-        <div className="flex flex-wrap items-center justify-center gap-2">
-          <ModeBtn
-            active={mode === "arrange"}
-            onClick={() => setMode("arrange")}
-          >
-            Arrange
-          </ModeBtn>
-          <ModeBtn active={mode === "draw"} onClick={() => setMode("draw")}>
-            Draw
-          </ModeBtn>
-          <ModeBtn active={sheet} onClick={() => setSheet((v) => !v)}>
-            Wall
-          </ModeBtn>
-          <button
-            type="button"
-            onClick={onCreate}
-            className="rounded-md border border-cream/25 px-3 py-1.5 text-sm text-cream/90"
-          >
-            New card
-          </button>
-        </div>
-        {mode === "draw" && (
-          <div className="mt-2 flex items-center justify-center gap-2">
-            {INK_COLORS.map((c) => (
-              <button
-                key={c}
-                type="button"
-                aria-label={`Ink ${c}`}
-                aria-pressed={ink === c}
-                onClick={() => setInk(c)}
-                className={[
-                  "h-7 w-7 rounded-full",
-                  ink === c ? "ring-2 ring-cream ring-offset-2 ring-offset-desk-deep" : "",
-                ].join(" ")}
-                style={{ backgroundColor: c }}
-              />
-            ))}
+      {profile.cards.length > 0 && (
+        <div className="wall-dock">
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <ModeBtn
+              active={mode === "arrange"}
+              onClick={() => setMode("arrange")}
+            >
+              Arrange
+            </ModeBtn>
+            <ModeBtn active={mode === "draw"} onClick={() => setMode("draw")}>
+              Draw
+            </ModeBtn>
+            <ModeBtn active={sheet} onClick={() => setSheet((v) => !v)}>
+              Wall
+            </ModeBtn>
             <button
               type="button"
-              className="ml-2 text-sm text-cream/80 underline-offset-2 hover:underline"
-              onClick={() => onWall(undoStroke(wall))}
+              onClick={onCreate}
+              className="rounded-md border border-cream/45 bg-cream/10 px-3 py-1.5 text-sm text-cream"
             >
-              Undo
+              New card
             </button>
           </div>
-        )}
-        <BackupBar profile={profile} onImport={onImport} className="mt-2" />
-      </div>
+          {mode === "draw" && (
+            <div className="mt-2 flex items-center justify-center gap-2">
+              {INK_COLORS.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  aria-label={`Ink ${c}`}
+                  aria-pressed={ink === c}
+                  onClick={() => setInk(c)}
+                  className={[
+                    "h-7 w-7 rounded-full",
+                    ink === c
+                      ? "ring-2 ring-cream ring-offset-2 ring-offset-desk-deep"
+                      : "",
+                  ].join(" ")}
+                  style={{ backgroundColor: c }}
+                />
+              ))}
+              <button
+                type="button"
+                className="ml-2 text-sm text-cream underline-offset-2 hover:underline"
+                onClick={() => onWall(undoStroke(wall))}
+              >
+                Undo
+              </button>
+            </div>
+          )}
+          <BackupBar profile={profile} onImport={onImport} className="mt-2" />
+        </div>
+      )}
 
       {sheet && (
         <div
@@ -545,8 +585,8 @@ function ModeBtn({
       className={[
         "rounded-md px-3 py-1.5 text-sm",
         active
-          ? "bg-cream/20 text-cream"
-          : "border border-cream/20 text-cream/80",
+          ? "bg-cream/40 text-cream"
+          : "border border-cream/45 text-cream",
       ].join(" ")}
     >
       {children}
