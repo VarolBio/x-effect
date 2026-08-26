@@ -1,4 +1,10 @@
-import { derive, emptyProfile, todayISO, type Profile } from "./domain/xeffect"
+import {
+  derive,
+  emptyProfile,
+  ensureLayouts,
+  todayISO,
+  type Profile,
+} from "./domain/xeffect"
 
 const KEY = "xeffect.v1"
 
@@ -8,7 +14,7 @@ export function loadProfile(): Profile {
     if (!raw) return emptyProfile()
     const parsed: unknown = JSON.parse(raw)
     if (!isProfile(parsed)) return emptyProfile()
-    return derive(parsed, todayISO())
+    return ensureLayouts(derive(parsed, todayISO()))
   } catch {
     return emptyProfile()
   }
@@ -22,7 +28,7 @@ export function parseProfile(raw: string): Profile | null {
   try {
     const parsed: unknown = JSON.parse(raw)
     if (!isProfile(parsed)) return null
-    return derive(parsed, todayISO())
+    return ensureLayouts(derive(parsed, todayISO()))
   } catch {
     return null
   }

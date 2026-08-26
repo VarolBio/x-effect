@@ -75,6 +75,133 @@ body {
     );
 }
 
+.desk.wall-cork {
+  background:
+    radial-gradient(ellipse 90% 55% at 50% -8%, rgba(255, 210, 140, 0.28), transparent 55%),
+    linear-gradient(180deg, #b88955 0%, #9a6d40 48%, #7a522e 100%);
+}
+
+.desk.wall-cork::before {
+  opacity: 0.55;
+  background-image:
+    radial-gradient(circle at 18% 22%, rgba(80, 40, 12, 0.35) 0.7px, transparent 1.4px),
+    radial-gradient(circle at 72% 58%, rgba(40, 18, 8, 0.28) 0.6px, transparent 1.2px),
+    repeating-linear-gradient(
+      90deg,
+      transparent 0,
+      transparent 2px,
+      rgba(60, 30, 10, 0.08) 3px
+    );
+  background-size: 22px 22px, 16px 16px, 100% 100%;
+}
+
+.desk.wall-paint {
+  background:
+    radial-gradient(ellipse 80% 50% at 50% -8%, rgba(255, 255, 255, 0.1), transparent 52%),
+    linear-gradient(180deg, #4a453f 0%, #322e2a 100%);
+}
+
+.desk.wall-paint::before {
+  opacity: 0.2;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='p'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23p)' opacity='.9'/%3E%3C/svg%3E");
+}
+
+.desk.wall-brick {
+  background: #3a2420;
+}
+
+.desk.wall-brick::before {
+  opacity: 0.85;
+  background-color: #5c322c;
+  background-image:
+    linear-gradient(90deg, rgba(20, 8, 6, 0.55) 2px, transparent 2px),
+    linear-gradient(rgba(20, 8, 6, 0.55) 2px, transparent 2px),
+    linear-gradient(#6e3b32, #5a302a);
+  background-size: 78px 38px, 78px 38px, 100% 100%;
+}
+
+.wall-tint {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  mix-blend-mode: overlay;
+  opacity: 0.42;
+}
+
+.wall-board {
+  position: relative;
+  min-height: 160svh;
+  padding-bottom: 6.5rem;
+}
+
+.wall-paper {
+  position: absolute;
+  width: min(16.5rem, calc(48% - 10px));
+  padding: 1.35rem 0.95rem 0.85rem;
+  user-select: none;
+}
+
+.paper-cream {
+  background-color: var(--color-paper);
+}
+
+.paper-yellow {
+  background-color: #f3e07a;
+}
+
+.paper-pink {
+  background-color: #f3c1d2;
+}
+
+.paper-blue {
+  background-color: #c8def0;
+}
+
+.paper-green {
+  background-color: #cfe6b8;
+}
+
+.tape-handle {
+  cursor: grab;
+  touch-action: none;
+  border: 0;
+  padding: 0;
+  appearance: none;
+  width: 96px;
+  height: 28px;
+  top: -14px;
+}
+
+.tape-handle:active {
+  cursor: grabbing;
+}
+
+.wall-draw-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.wall-strokes {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+}
+
+.wall-dock {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 80;
+  padding: 0.55rem 1rem calc(0.7rem + env(safe-area-inset-bottom));
+  background: linear-gradient(180deg, transparent, rgba(18, 12, 8, 0.88) 28%);
+}
+
 .grain {
   pointer-events: none;
   position: fixed;
