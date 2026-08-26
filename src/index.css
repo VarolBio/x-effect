@@ -133,6 +133,7 @@ body {
   position: relative;
   min-height: 160svh;
   padding-bottom: 6.5rem;
+  overflow-anchor: none;
 }
 
 .wall-board-empty {
@@ -151,11 +152,17 @@ html.wall-locked body {
   touch-action: none;
 }
 
+html.wall-locked body {
+  position: fixed;
+  width: 100%;
+}
+
 .wall-paper {
   position: absolute;
   width: min(16.5rem, calc(48% - 10px));
   padding: 1.35rem 0.95rem 0.85rem;
   user-select: none;
+  overflow-anchor: none;
 }
 
 .paper-cream {
@@ -290,6 +297,10 @@ html.wall-locked body {
     0 0 0 1px rgba(70, 50, 20, 0.12),
     0 18px 40px rgba(0, 0, 0, 0.38),
     0 4px 10px rgba(0, 0, 0, 0.25);
+}
+
+.index-card.wall-paper {
+  position: absolute;
 }
 
 .index-card-lined {

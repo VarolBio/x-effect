@@ -49,22 +49,41 @@ const holdOpts: AddEventListenerOptions = { passive: false, capture: true }
 function listenHold(
   move: (clientX: number, clientY: number) => void,
   end: () => void,
-) {
+): () => void {
+  let done = false
+  const originScroll = { x: window.scrollX, y: window.scrollY }
+  document.documentElement.classList.add("wall-locked")
+  document.body.style.top = `-${originScroll.y}px`
+  document.body.style.left = `-${originScroll.x}px`
   function onMove(ev: Event) {
+    if (done) return
     ev.preventDefault()
     const p = clientOf(ev)
     if (!p) return
     move(p.x, p.y)
   }
-  function onUp(ev: Event) {
-    ev.preventDefault()
+  function onScroll() {
+    window.scrollTo(originScroll.x, originScroll.y)
+  }
+  function finish() {
+    if (done) return
+    done = true
     window.removeEventListener("pointermove", onMove, holdOpts)
     window.removeEventListener("pointerup", onUp, holdOpts)
     window.removeEventListener("pointercancel", onUp, holdOpts)
     window.removeEventListener("touchmove", onMove, holdOpts)
     window.removeEventListener("touchend", onUp, holdOpts)
     window.removeEventListener("touchcancel", onUp, holdOpts)
+    window.removeEventListener("scroll", onScroll, true)
+    document.documentElement.classList.remove("wall-locked")
+    document.body.style.top = ""
+    document.body.style.left = ""
+    window.scrollTo(originScroll.x, originScroll.y)
     end()
+  }
+  function onUp(ev: Event) {
+    ev.preventDefault()
+    finish()
   }
   window.addEventListener("pointermove", onMove, holdOpts)
   window.addEventListener("pointerup", onUp, holdOpts)
@@ -72,6 +91,8 @@ function listenHold(
   window.addEventListener("touchmove", onMove, holdOpts)
   window.addEventListener("touchend", onUp, holdOpts)
   window.addEventListener("touchcancel", onUp, holdOpts)
+  window.addEventListener("scroll", onScroll, true)
+  return finish
 }
 
 type Mode = "arrange" | "draw"
@@ -113,12 +134,14 @@ export function Pinboard({
   const drawRef = useRef(false)
   const liveRef = useRef({ x: 0, y: 0 })
   const draftRef = useRef<number[]>([])
+  const stopHoldRef = useRef<(() => void) | null>(null)
   const active = profile.cards.filter((c) => !isCardComplete(c, today))
   const unmarked = active.filter((c) => needsMark(c, today))
   const holeToday = active.some((c) => missedYesterday(c, today))
 
   useEffect(() => {
     return () => {
+      stopHoldRef.current?.()
       document.documentElement.classList.remove("wall-locked")
     }
   }, [])
@@ -137,18 +160,25 @@ export function Pinboard({
     return [(clientX - r.left) / r.width, (clientY - r.top) / r.height]
   }
 
-  function beginDrag(e: ReactPointerEvent<HTMLElement>, card: Card) {
-    if (mode !== "arrange" || dragRef.current) return
+  function beginDrag(e: PointerEvent, card: Card) {
+    if (mode !== "arrange") return
     if (e.pointerType === "mouse" && e.button !== 0) return
     const board = boardRef.current
     if (!board) return
     e.preventDefault()
-    e.nativeEvent.preventDefault()
+    const handle =
+      e.currentTarget instanceof HTMLElement
+        ? e.currentTarget
+        : e.target instanceof HTMLElement
+          ? e.target
+          : null
     try {
-      e.currentTarget.setPointerCapture(e.pointerId)
+      handle?.setPointerCapture(e.pointerId)
     } catch {
       /* capture is optional; touchmove still drives the drag */
     }
+    if (handle instanceof HTMLElement) handle.blur()
+    stopHoldRef.current?.()
     const layout = layoutOf(card)
     const origin = { x: e.clientX, y: e.clientY, lx: layout.x, ly: layout.y }
     const z = nextZ(profile.cards)
@@ -158,7 +188,7 @@ export function Pinboard({
     document.documentElement.classList.add("wall-locked")
     board.classList.add("is-grabbing")
 
-    listenHold(
+    stopHoldRef.current = listenHold(
       (clientX, clientY) => {
         const el = boardRef.current
         if (!el) return
@@ -182,6 +212,7 @@ export function Pinboard({
         setDrag({ id: card.id, x, y })
       },
       () => {
+        stopHoldRef.current = null
         if (!dragRef.current) return
         dragRef.current = false
         document.documentElement.classList.remove("wall-locked")
@@ -197,18 +228,24 @@ export function Pinboard({
     )
   }
 
-  function beginDraw(e: ReactPointerEvent<SVGSVGElement>) {
-    if (mode !== "draw" || drawRef.current) return
+  function beginDraw(e: PointerEvent) {
+    if (mode !== "draw") return
     if (e.pointerType === "mouse" && e.button !== 0) return
     const p = pointOnBoard(e.clientX, e.clientY)
     if (!p) return
     e.preventDefault()
-    e.nativeEvent.preventDefault()
+    const layer =
+      e.currentTarget instanceof Element
+        ? e.currentTarget
+        : e.target instanceof Element
+          ? e.target
+          : null
     try {
-      e.currentTarget.setPointerCapture(e.pointerId)
+      layer?.setPointerCapture(e.pointerId)
     } catch {
       /* capture is optional; touchmove still drives the stroke */
     }
+    stopHoldRef.current?.()
     const board = boardRef.current
     drawRef.current = true
     draftRef.current = [...p]
@@ -216,7 +253,7 @@ export function Pinboard({
     document.documentElement.classList.add("wall-locked")
     board?.classList.add("is-grabbing")
 
-    listenHold(
+    stopHoldRef.current = listenHold(
       (clientX, clientY) => {
         if (!drawRef.current) return
         const next = pointOnBoard(clientX, clientY)
@@ -233,6 +270,7 @@ export function Pinboard({
         setDraft(draftRef.current)
       },
       () => {
+        stopHoldRef.current = null
         if (!drawRef.current) return
         drawRef.current = false
         document.documentElement.classList.remove("wall-locked")
@@ -415,7 +453,7 @@ export function Pinboard({
             viewBox="0 0 1 1"
             preserveAspectRatio="none"
             onPointerDown={(e: ReactPointerEvent<SVGSVGElement>) => {
-              beginDraw(e)
+              beginDraw(e.nativeEvent)
             }}
           >
             {draft && draft.length >= 4 && (
@@ -592,27 +630,38 @@ function TapeHandle({
   onHold,
 }: {
   label: string
-  onHold: (e: ReactPointerEvent<HTMLElement>) => void
+  onHold: (e: PointerEvent) => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
+  const holdRef = useRef(onHold)
+  useEffect(() => {
+    holdRef.current = onHold
+  }, [onHold])
   useEffect(() => {
     const el = ref.current
     if (!el) return
-    const block = (e: TouchEvent) => e.preventDefault()
-    el.addEventListener("touchstart", block, { passive: false })
-    return () => el.removeEventListener("touchstart", block)
+    const blockTouch = (e: TouchEvent) => e.preventDefault()
+    const down = (e: PointerEvent) => {
+      if (e.pointerType === "mouse" && e.button !== 0) return
+      e.preventDefault()
+      e.stopPropagation()
+      if (el instanceof HTMLElement) el.blur()
+      holdRef.current(e)
+    }
+    el.addEventListener("touchstart", blockTouch, { passive: false })
+    el.addEventListener("pointerdown", down)
+    return () => {
+      el.removeEventListener("touchstart", blockTouch)
+      el.removeEventListener("pointerdown", down)
+    }
   }, [])
   return (
     <div
       ref={ref}
       role="button"
-      tabIndex={0}
+      tabIndex={-1}
       className="tape tape-handle"
       aria-label={label}
-      onPointerDown={(e) => {
-        e.stopPropagation()
-        onHold(e)
-      }}
     />
   )
 }
