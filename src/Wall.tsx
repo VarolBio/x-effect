@@ -1,4 +1,10 @@
-import { useRef, useState, type CSSProperties, type MouseEvent, type PointerEvent } from "react"
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+} from "react"
 import {
   INK_COLORS,
   LEVEL_SIZE,
@@ -26,6 +32,68 @@ import {
   type WallStroke,
 } from "./domain/xeffect"
 import { parseProfile } from "./storage"
+
+function clientOf(ev: Event): { x: number; y: number } | null {
+  if (typeof TouchEvent !== "undefined" && ev instanceof TouchEvent) {
+    const t = ev.touches[0] ?? ev.changedTouches[0]
+    return t ? { x: t.clientX, y: t.clientY } : null
+  }
+  if ("clientX" in ev && typeof (ev as PointerEvent).clientX === "number") {
+    return { x: (ev as PointerEvent).clientX, y: (ev as PointerEvent).clientY }
+  }
+  return null
+}
+
+const holdOpts: AddEventListenerOptions = { passive: false, capture: true }
+
+function listenHold(
+  move: (clientX: number, clientY: number) => void,
+  end: () => void,
+): () => void {
+  let done = false
+  const originScroll = { x: window.scrollX, y: window.scrollY }
+  document.documentElement.classList.add("wall-locked")
+  document.body.style.top = `-${originScroll.y}px`
+  document.body.style.left = `-${originScroll.x}px`
+  function onMove(ev: Event) {
+    if (done) return
+    ev.preventDefault()
+    const p = clientOf(ev)
+    if (!p) return
+    move(p.x, p.y)
+  }
+  function onScroll() {
+    window.scrollTo(originScroll.x, originScroll.y)
+  }
+  function finish() {
+    if (done) return
+    done = true
+    window.removeEventListener("pointermove", onMove, holdOpts)
+    window.removeEventListener("pointerup", onUp, holdOpts)
+    window.removeEventListener("pointercancel", onUp, holdOpts)
+    window.removeEventListener("touchmove", onMove, holdOpts)
+    window.removeEventListener("touchend", onUp, holdOpts)
+    window.removeEventListener("touchcancel", onUp, holdOpts)
+    window.removeEventListener("scroll", onScroll, true)
+    document.documentElement.classList.remove("wall-locked")
+    document.body.style.top = ""
+    document.body.style.left = ""
+    window.scrollTo(originScroll.x, originScroll.y)
+    end()
+  }
+  function onUp(ev: Event) {
+    ev.preventDefault()
+    finish()
+  }
+  window.addEventListener("pointermove", onMove, holdOpts)
+  window.addEventListener("pointerup", onUp, holdOpts)
+  window.addEventListener("pointercancel", onUp, holdOpts)
+  window.addEventListener("touchmove", onMove, holdOpts)
+  window.addEventListener("touchend", onUp, holdOpts)
+  window.addEventListener("touchcancel", onUp, holdOpts)
+  window.addEventListener("scroll", onScroll, true)
+  return finish
+}
 
 type Mode = "arrange" | "draw"
 
@@ -66,9 +134,17 @@ export function Pinboard({
   const drawRef = useRef(false)
   const liveRef = useRef({ x: 0, y: 0 })
   const draftRef = useRef<number[]>([])
+  const stopHoldRef = useRef<(() => void) | null>(null)
   const active = profile.cards.filter((c) => !isCardComplete(c, today))
   const unmarked = active.filter((c) => needsMark(c, today))
   const holeToday = active.some((c) => missedYesterday(c, today))
+
+  useEffect(() => {
+    return () => {
+      stopHoldRef.current?.()
+      document.documentElement.classList.remove("wall-locked")
+    }
+  }, [])
 
   function layoutOf(card: Card): CardLayout {
     const base = card.layout ?? { x: 4, y: 8, z: 2, rot: 0, paper: "cream" }
@@ -84,111 +160,135 @@ export function Pinboard({
     return [(clientX - r.left) / r.width, (clientY - r.top) / r.height]
   }
 
-  function beginDrag(clientX: number, clientY: number, card: Card) {
-    if (mode !== "arrange" || dragRef.current) return
+  function beginDrag(e: PointerEvent, card: Card) {
+    if (mode !== "arrange") return
+    if (e.pointerType === "mouse" && e.button !== 0) return
     const board = boardRef.current
     if (!board) return
+    e.preventDefault()
+    const handle =
+      e.currentTarget instanceof HTMLElement
+        ? e.currentTarget
+        : e.target instanceof HTMLElement
+          ? e.target
+          : null
+    try {
+      handle?.setPointerCapture(e.pointerId)
+    } catch {
+      /* capture is optional; touchmove still drives the drag */
+    }
+    if (handle instanceof HTMLElement) handle.blur()
+    stopHoldRef.current?.()
     const layout = layoutOf(card)
-    const origin = { x: clientX, y: clientY, lx: layout.x, ly: layout.y }
+    const origin = { x: e.clientX, y: e.clientY, lx: layout.x, ly: layout.y }
     const z = nextZ(profile.cards)
     dragRef.current = true
     liveRef.current = { x: layout.x, y: layout.y }
     setDrag({ id: card.id, x: layout.x, y: layout.y })
+    document.documentElement.classList.add("wall-locked")
+    board.classList.add("is-grabbing")
 
-    function move(ev: globalThis.MouseEvent) {
-      const el = boardRef.current
-      if (!el) return
-      const r = el.getBoundingClientRect()
-      const paper = paperEls.current.get(card.id)
-      const maxX = paper
-        ? Math.max(0, ((r.width - paper.offsetWidth) / r.width) * 100)
-        : 70
-      const maxY = paper
-        ? Math.max(0, ((r.height - paper.offsetHeight) / r.height) * 100)
-        : 80
-      const x = Math.min(
-        maxX,
-        Math.max(0, origin.lx + ((ev.clientX - origin.x) / r.width) * 100),
-      )
-      const y = Math.min(
-        maxY,
-        Math.max(0, origin.ly + ((ev.clientY - origin.y) / r.height) * 100),
-      )
-      liveRef.current = { x, y }
-      setDrag({ id: card.id, x, y })
-    }
-
-    function up() {
-      if (!dragRef.current) return
-      dragRef.current = false
-      window.removeEventListener("pointermove", move)
-      window.removeEventListener("mousemove", move)
-      window.removeEventListener("pointerup", up)
-      window.removeEventListener("mouseup", up)
-      setDrag(null)
-      onLayout(card.id, {
-        ...layout,
-        x: liveRef.current.x,
-        y: liveRef.current.y,
-        z,
-      })
-    }
-
-    window.addEventListener("pointermove", move)
-    window.addEventListener("mousemove", move)
-    window.addEventListener("pointerup", up)
-    window.addEventListener("mouseup", up)
+    stopHoldRef.current = listenHold(
+      (clientX, clientY) => {
+        const el = boardRef.current
+        if (!el) return
+        const r = el.getBoundingClientRect()
+        const paper = paperEls.current.get(card.id)
+        const maxX = paper
+          ? Math.max(0, ((r.width - paper.offsetWidth) / r.width) * 100)
+          : 70
+        const maxY = paper
+          ? Math.max(0, ((r.height - paper.offsetHeight) / r.height) * 100)
+          : 80
+        const x = Math.min(
+          maxX,
+          Math.max(0, origin.lx + ((clientX - origin.x) / r.width) * 100),
+        )
+        const y = Math.min(
+          maxY,
+          Math.max(0, origin.ly + ((clientY - origin.y) / r.height) * 100),
+        )
+        liveRef.current = { x, y }
+        setDrag({ id: card.id, x, y })
+      },
+      () => {
+        stopHoldRef.current = null
+        if (!dragRef.current) return
+        dragRef.current = false
+        document.documentElement.classList.remove("wall-locked")
+        boardRef.current?.classList.remove("is-grabbing")
+        setDrag(null)
+        onLayout(card.id, {
+          ...layout,
+          x: liveRef.current.x,
+          y: liveRef.current.y,
+          z,
+        })
+      },
+    )
   }
 
-  function beginDraw(clientX: number, clientY: number) {
-    if (mode !== "draw" || drawRef.current) return
-    const p = pointOnBoard(clientX, clientY)
+  function beginDraw(e: PointerEvent) {
+    if (mode !== "draw") return
+    if (e.pointerType === "mouse" && e.button !== 0) return
+    const p = pointOnBoard(e.clientX, e.clientY)
     if (!p) return
+    e.preventDefault()
+    const layer =
+      e.currentTarget instanceof Element
+        ? e.currentTarget
+        : e.target instanceof Element
+          ? e.target
+          : null
+    try {
+      layer?.setPointerCapture(e.pointerId)
+    } catch {
+      /* capture is optional; touchmove still drives the stroke */
+    }
+    stopHoldRef.current?.()
+    const board = boardRef.current
     drawRef.current = true
     draftRef.current = [...p]
     setDraft(draftRef.current)
+    document.documentElement.classList.add("wall-locked")
+    board?.classList.add("is-grabbing")
 
-    function move(ev: globalThis.MouseEvent) {
-      if (!drawRef.current) return
-      const next = pointOnBoard(ev.clientX, ev.clientY)
-      if (!next) return
-      const pts = draftRef.current
-      const lastX = pts[pts.length - 2]
-      const lastY = pts[pts.length - 1]
-      if (lastX !== undefined && lastY !== undefined) {
-        const dx = next[0] - lastX
-        const dy = next[1] - lastY
-        if (dx * dx + dy * dy < 0.00002) return
-      }
-      draftRef.current = [...pts, ...next]
-      setDraft(draftRef.current)
-    }
-
-    function up() {
-      if (!drawRef.current) return
-      drawRef.current = false
-      window.removeEventListener("pointermove", move)
-      window.removeEventListener("mousemove", move)
-      window.removeEventListener("pointerup", up)
-      window.removeEventListener("mouseup", up)
-      const points = draftRef.current
-      draftRef.current = []
-      setDraft(null)
-      if (points.length < 4) return
-      onWall(
-        appendStroke(wall, {
-          id: newId(),
-          color: ink,
-          width: 3,
-          points,
-        }),
-      )
-    }
-
-    window.addEventListener("pointermove", move)
-    window.addEventListener("mousemove", move)
-    window.addEventListener("pointerup", up)
-    window.addEventListener("mouseup", up)
+    stopHoldRef.current = listenHold(
+      (clientX, clientY) => {
+        if (!drawRef.current) return
+        const next = pointOnBoard(clientX, clientY)
+        if (!next) return
+        const pts = draftRef.current
+        const lastX = pts[pts.length - 2]
+        const lastY = pts[pts.length - 1]
+        if (lastX !== undefined && lastY !== undefined) {
+          const dx = next[0] - lastX
+          const dy = next[1] - lastY
+          if (dx * dx + dy * dy < 0.00002) return
+        }
+        draftRef.current = [...pts, ...next]
+        setDraft(draftRef.current)
+      },
+      () => {
+        stopHoldRef.current = null
+        if (!drawRef.current) return
+        drawRef.current = false
+        document.documentElement.classList.remove("wall-locked")
+        boardRef.current?.classList.remove("is-grabbing")
+        const points = draftRef.current
+        draftRef.current = []
+        setDraft(null)
+        if (points.length < 4) return
+        onWall(
+          appendStroke(wall, {
+            id: newId(),
+            color: ink,
+            width: 3,
+            points,
+          }),
+        )
+      },
+    )
   }
 
   const strokes = wall.strokes ?? []
@@ -209,34 +309,48 @@ export function Pinboard({
 
       <div
         ref={boardRef}
-        className="wall-board"
-        style={{ minHeight: `${Math.max(160, 40 + rows * 48)}svh` }}
+        className={[
+          "wall-board",
+          profile.cards.length === 0 ? "wall-board-empty" : "",
+        ].join(" ")}
+        style={
+          profile.cards.length === 0
+            ? undefined
+            : { minHeight: `${Math.max(160, 40 + rows * 48)}svh` }
+        }
       >
         {profile.cards.length === 0 && (
-          <div className="index-card relative mx-auto mt-6 max-w-md px-6 pb-8 pt-10">
-            <span className="tape" aria-hidden="true" />
-            <HeroCard />
-            <h1 className="why-hand mt-5 text-center text-3xl leading-tight">
-              49 days. One X a day.
-            </h1>
-            <p className="mt-4 text-center text-mute">
-              Miss a day? Leave a hole. Keep going. The card still finishes.
-            </p>
-            <p className="mt-2 text-center text-mute">
-              Write why you&apos;re doing this — you&apos;ll need it.
-            </p>
-            <p className="mt-4 text-center text-sm text-mute">
-              Each X is {XP_PER_X} XP. Every {LEVEL_SIZE} XP you rank up — a new
-              name on the desk. Tap your rank anytime to see the ladder.
-            </p>
-            <button
-              type="button"
-              onClick={onCreate}
-              className="btn-mark mt-8 w-full rounded-md px-4 py-3 text-lg text-white"
-            >
-              Start a card
-            </button>
-          </div>
+          <>
+            <div className="index-card relative mx-auto mt-6 max-w-md px-6 pb-8 pt-10">
+              <span className="tape" aria-hidden="true" />
+              <HeroCard />
+              <h1 className="why-hand mt-5 text-center text-3xl leading-tight">
+                49 days. One X a day.
+              </h1>
+              <p className="mt-4 text-center text-mute">
+                Miss a day? Leave a hole. Keep going. The card still finishes.
+              </p>
+              <p className="mt-2 text-center text-mute">
+                Write why you&apos;re doing this — you&apos;ll need it.
+              </p>
+              <p className="mt-4 text-center text-sm text-mute">
+                Each X is {XP_PER_X} XP. Every {LEVEL_SIZE} XP you rank up — a
+                new name on the desk. Tap your rank anytime to see the ladder.
+              </p>
+              <button
+                type="button"
+                onClick={onCreate}
+                className="btn-mark mt-8 w-full rounded-md px-4 py-3 text-lg text-white"
+              >
+                Start a card
+              </button>
+            </div>
+            <BackupBar
+              profile={profile}
+              onImport={onImport}
+              className="mt-6"
+            />
+          </>
         )}
 
         {profile.cards.map((card) => {
@@ -265,21 +379,9 @@ export function Pinboard({
                   PAPER_COLORS[0].hex,
               }}
             >
-              <button
-                type="button"
-                className="tape tape-handle"
-                aria-label={`Move ${card.name}`}
-                onPointerDown={(e: PointerEvent<HTMLButtonElement>) => {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  beginDrag(e.clientX, e.clientY, card)
-                }}
-                onMouseDown={(e: MouseEvent<HTMLButtonElement>) => {
-                  if (e.button !== 0) return
-                  e.preventDefault()
-                  e.stopPropagation()
-                  beginDrag(e.clientX, e.clientY, card)
-                }}
+              <TapeHandle
+                label={`Move ${card.name}`}
+                onHold={(e) => beginDrag(e, card)}
               />
               <div className="flex items-start justify-between gap-2">
                 <div>
@@ -314,25 +416,21 @@ export function Pinboard({
                 <button
                   type="button"
                   onClick={() => onOpen(card.id)}
-                  className="text-sm text-mute underline-offset-2 hover:underline"
+                  className="shrink-0 rounded-md border border-ink/15 bg-white/50 px-3 py-1.5 text-sm"
                 >
                   Open card
                 </button>
                 <button
                   type="button"
                   onClick={() => onCyclePaper(card.id)}
-                  className="flex items-center gap-1.5 text-xs text-mute"
-                >
-                  <span
-                    className="h-4 w-4 rounded-full border border-ink/35 shadow-sm"
-                    style={{
-                      backgroundColor:
-                        PAPER_COLORS.find((p) => p.id === paper)?.hex ??
-                        PAPER_COLORS[0].hex,
-                    }}
-                  />
-                  Paper
-                </button>
+                  aria-label="Paper color"
+                  className="h-6 w-6 rounded-full border border-ink/35 shadow-sm"
+                  style={{
+                    backgroundColor:
+                      PAPER_COLORS.find((p) => p.id === paper)?.hex ??
+                      PAPER_COLORS[0].hex,
+                  }}
+                />
               </div>
             </article>
           )
@@ -354,14 +452,8 @@ export function Pinboard({
             className="wall-draw-layer"
             viewBox="0 0 1 1"
             preserveAspectRatio="none"
-            onPointerDown={(e: PointerEvent<SVGSVGElement>) => {
-              e.preventDefault()
-              beginDraw(e.clientX, e.clientY)
-            }}
-            onMouseDown={(e: MouseEvent<SVGSVGElement>) => {
-              if (e.button !== 0) return
-              e.preventDefault()
-              beginDraw(e.clientX, e.clientY)
+            onPointerDown={(e: ReactPointerEvent<SVGSVGElement>) => {
+              beginDraw(e.nativeEvent)
             }}
           >
             {draft && draft.length >= 4 && (
@@ -379,55 +471,59 @@ export function Pinboard({
         )}
       </div>
 
-      <div className="wall-dock">
-        <div className="flex flex-wrap items-center justify-center gap-2">
-          <ModeBtn
-            active={mode === "arrange"}
-            onClick={() => setMode("arrange")}
-          >
-            Arrange
-          </ModeBtn>
-          <ModeBtn active={mode === "draw"} onClick={() => setMode("draw")}>
-            Draw
-          </ModeBtn>
-          <ModeBtn active={sheet} onClick={() => setSheet((v) => !v)}>
-            Wall
-          </ModeBtn>
-          <button
-            type="button"
-            onClick={onCreate}
-            className="rounded-md border border-cream/25 px-3 py-1.5 text-sm text-cream/90"
-          >
-            New card
-          </button>
-        </div>
-        {mode === "draw" && (
-          <div className="mt-2 flex items-center justify-center gap-2">
-            {INK_COLORS.map((c) => (
-              <button
-                key={c}
-                type="button"
-                aria-label={`Ink ${c}`}
-                aria-pressed={ink === c}
-                onClick={() => setInk(c)}
-                className={[
-                  "h-7 w-7 rounded-full",
-                  ink === c ? "ring-2 ring-cream ring-offset-2 ring-offset-desk-deep" : "",
-                ].join(" ")}
-                style={{ backgroundColor: c }}
-              />
-            ))}
+      {profile.cards.length > 0 && (
+        <div className="wall-dock">
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <ModeBtn
+              active={mode === "arrange"}
+              onClick={() => setMode("arrange")}
+            >
+              Arrange
+            </ModeBtn>
+            <ModeBtn active={mode === "draw"} onClick={() => setMode("draw")}>
+              Draw
+            </ModeBtn>
+            <ModeBtn active={sheet} onClick={() => setSheet((v) => !v)}>
+              Wall
+            </ModeBtn>
             <button
               type="button"
-              className="ml-2 text-sm text-cream/80 underline-offset-2 hover:underline"
-              onClick={() => onWall(undoStroke(wall))}
+              onClick={onCreate}
+              className="rounded-md border border-cream/45 bg-cream/10 px-3 py-1.5 text-sm text-cream"
             >
-              Undo
+              New card
             </button>
           </div>
-        )}
-        <BackupBar profile={profile} onImport={onImport} className="mt-2" />
-      </div>
+          {mode === "draw" && (
+            <div className="mt-2 flex items-center justify-center gap-2">
+              {INK_COLORS.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  aria-label={`Ink ${c}`}
+                  aria-pressed={ink === c}
+                  onClick={() => setInk(c)}
+                  className={[
+                    "h-7 w-7 rounded-full",
+                    ink === c
+                      ? "ring-2 ring-cream ring-offset-2 ring-offset-desk-deep"
+                      : "",
+                  ].join(" ")}
+                  style={{ backgroundColor: c }}
+                />
+              ))}
+              <button
+                type="button"
+                className="ml-2 text-sm text-cream underline-offset-2 hover:underline"
+                onClick={() => onWall(undoStroke(wall))}
+              >
+                Undo
+              </button>
+            </div>
+          )}
+          <BackupBar profile={profile} onImport={onImport} className="mt-2" />
+        </div>
+      )}
 
       {sheet && (
         <div
@@ -529,6 +625,47 @@ function toPoints(points: number[]): string {
   return out.join(" ")
 }
 
+function TapeHandle({
+  label,
+  onHold,
+}: {
+  label: string
+  onHold: (e: PointerEvent) => void
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  const holdRef = useRef(onHold)
+  useEffect(() => {
+    holdRef.current = onHold
+  }, [onHold])
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const blockTouch = (e: TouchEvent) => e.preventDefault()
+    const down = (e: PointerEvent) => {
+      if (e.pointerType === "mouse" && e.button !== 0) return
+      e.preventDefault()
+      e.stopPropagation()
+      if (el instanceof HTMLElement) el.blur()
+      holdRef.current(e)
+    }
+    el.addEventListener("touchstart", blockTouch, { passive: false })
+    el.addEventListener("pointerdown", down)
+    return () => {
+      el.removeEventListener("touchstart", blockTouch)
+      el.removeEventListener("pointerdown", down)
+    }
+  }, [])
+  return (
+    <div
+      ref={ref}
+      role="button"
+      tabIndex={-1}
+      className="tape tape-handle"
+      aria-label={label}
+    />
+  )
+}
+
 function ModeBtn({
   active,
   onClick,
@@ -545,8 +682,8 @@ function ModeBtn({
       className={[
         "rounded-md px-3 py-1.5 text-sm",
         active
-          ? "bg-cream/20 text-cream"
-          : "border border-cream/20 text-cream/80",
+          ? "bg-cream/40 text-cream"
+          : "border border-cream/45 text-cream",
       ].join(" ")}
     >
       {children}
