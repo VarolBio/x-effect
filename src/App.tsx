@@ -100,6 +100,7 @@ export default function App() {
   }
 
   function onMark(target: Card) {
+    if (!needsMark(target, today)) return
     const prevXs = totalXs(target)
     const oldXp = profile.xp
     const oldBadges = new Set(profile.badges)
