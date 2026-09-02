@@ -1,6 +1,6 @@
 # X Effect
 
-A local 7×7 / 49-day habit card. Data stays in the browser — no account.
+A local 7×7 / 49-day habit card. Cards stay in the browser — no account. The live site records visits with [GoatCounter](https://varolbio.goatcounter.com) (no cookies).
 
 **Live app:** https://varolbio.github.io/x-effect/
 
